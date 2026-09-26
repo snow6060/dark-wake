@@ -13,6 +13,7 @@ from darkwake.config import settings
 from darkwake.db import ChokepointTransit, SessionLocal, init_db, get_db
 from darkwake.agents.schemas import DebateState
 from darkwake.agents.graph import create_debate_graph
+from darkwake.agents.logger import save_debate_audit_log
 
 app = FastAPI(title="DarkWake Oil Intelligence API", version="0.2.0")
 
@@ -126,16 +127,27 @@ def run_market_analysis(payload: Optional[AnalyzeRequest] = None, db: Session = 
         app_graph = create_debate_graph(api_key=runtime_api_key)
         result_state_dict = app_graph.invoke(initial_state)
         
+        # Log to structured JSON file
+        result_state_obj = DebateState(**result_state_dict)
+        save_debate_audit_log(result_state_obj)
+        
         if isinstance(result_state_dict, dict):
+            # Extract models dict forms for API response
+            tech_out = result_state_dict.get("technical_output")
+            bull_out = result_state_dict.get("bullish_output")
+            bear_out = result_state_dict.get("bearish_output")
+            choke_out = result_state_dict.get("chokepoint_output")
+            risk_out = result_state_dict.get("risk_verdict")
+
             return {
                 "status": "success",
                 "timestamp": dt.datetime.utcnow().isoformat(),
                 "brent_price": result_state_dict.get("brent_price"),
-                "technical": result_state_dict.get("technical_output"),
-                "bullish": result_state_dict.get("bullish_output"),
-                "bearish": result_state_dict.get("bearish_output"),
-                "chokepoint": result_state_dict.get("chokepoint_output"),
-                "risk_verdict": result_state_dict.get("risk_verdict"),
+                "technical": tech_out.dict() if hasattr(tech_out, "dict") else tech_out,
+                "bullish": bull_out.dict() if hasattr(bull_out, "dict") else bull_out,
+                "bearish": bear_out.dict() if hasattr(bear_out, "dict") else bear_out,
+                "chokepoint": choke_out.dict() if hasattr(choke_out, "dict") else choke_out,
+                "risk_verdict": risk_out.dict() if hasattr(risk_out, "dict") else risk_out,
                 "audit_trail": result_state_dict.get("messages")
             }
         else:
