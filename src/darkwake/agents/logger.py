@@ -1,33 +1,68 @@
-# src/darkwake/agents/logger.py
+"""
+src/darkwake/agents/logger.py
+------------------------------
+Writes a structured JSON audit log for each completed agent debate run.
+"""
+from __future__ import annotations
+
 import json
 from datetime import datetime
 from pathlib import Path
-from src.darkwake.agents.schemas import DebateState
+from typing import Any
+
+from darkwake.agents.schemas import AgentOutput, DebateState, RiskVerdictOutput
 
 LOG_DIR = Path("logs")
 
-def save_debate_audit_log(state: DebateState) -> str:
+
+def _serialize(value: Any) -> Any:
+    """Convert Pydantic models and other non-serializable objects to plain dicts."""
+    if value is None:
+        return None
+    if isinstance(value, (AgentOutput, RiskVerdictOutput)):
+        return value.model_dump()
+    if isinstance(value, list):
+        return [_serialize(item) for item in value]
+    if isinstance(value, dict):
+        return {k: _serialize(v) for k, v in value.items()}
+    return value
+
+
+def save_debate_audit_log(state: DebateState) -> Path:
+    """
+    Persist the completed debate state to a timestamped JSON file under logs/.
+
+    Parameters
+    ----------
+    state : DebateState (TypedDict)
+        The final state dict returned by graph.invoke().
+
+    Returns
+    -------
+    Path
+        Absolute path to the written log file.
+    """
     LOG_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp_str = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-    log_file = LOG_DIR / f"debate_{timestamp_str}.json"
-    
-    log_data = {
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    filepath = LOG_DIR / f"debate_{timestamp}.json"
+
+    log_payload = {
         "timestamp": datetime.utcnow().isoformat(),
-        "brent_price": state.brent_price,
-        "price_change_24h": state.price_change_24h,
-        "news_headlines": state.news_headlines,
-        "chokepoint_data": state.chokepoint_data,
+        "brent_price": state.get("brent_price"),
+        "price_change_24h": state.get("price_change_24h"),
+        "news_headlines": state.get("news_headlines", []),
+        "chokepoint_data": state.get("chokepoint_data", []),
         "agents": {
-            "technical": state.technical_output.dict() if state.technical_output else None,
-            "bullish": state.bullish_output.dict() if state.bullish_output else None,
-            "bearish": state.bearish_output.dict() if state.bearish_output else None,
-            "chokepoint": state.chokepoint_output.dict() if state.chokepoint_output else None,
+            "technical": _serialize(state.get("technical_output")),
+            "bullish": _serialize(state.get("bullish_output")),
+            "bearish": _serialize(state.get("bearish_output")),
+            "chokepoint": _serialize(state.get("chokepoint_output")),
         },
-        "risk_verdict": state.risk_verdict.dict() if state.risk_verdict else None,
-        "messages": state.messages
+        "risk_verdict": _serialize(state.get("risk_verdict")),
+        "messages": state.get("messages", []),
     }
-    
-    with open(log_file, "w", encoding="utf-8") as f:
-        json.dump(log_data, f, indent=2)
-        
-    return str(log_file)
+
+    with open(filepath, "w", encoding="utf-8") as fh:
+        json.dump(log_payload, fh, indent=2, default=str)
+
+    return filepath
