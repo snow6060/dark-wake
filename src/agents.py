@@ -117,7 +117,7 @@ def compile_trading_graph():
     workflow.add_edge("gather_context", "chokepoint_analyst")
     workflow.add_edge("chokepoint_analyst", "bullish_analyst")
     workflow.add_edge("bullish_analyst", "bearish_analyst")
-    workflow.add_edge("bearish_analyst", "risk_manager")
+    workflow.add_edge("bearish_analyst", "risk_manager")  # Routes correctly to Risk Manager now
     workflow.add_edge("risk_manager", END)
     
     return workflow.compile()
