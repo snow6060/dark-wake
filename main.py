@@ -3,21 +3,21 @@ from sqlalchemy.orm import Session
 from src.database import SessionLocal, init_db, ChokepointRecord
 from src.ingestion import fetch_imf_chokepoint_data
 from src.scheduler import start_scheduler
+from src.agents import run_agent_pipeline
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup tasks
     init_db()
-    fetch_imf_chokepoint_data() # Initial fetch on boot
+    fetch_imf_chokepoint_data()
     start_scheduler()
     yield
-    # Shutdown tasks (if any)
 
 app = FastAPI(
     title="Oil Chokepoint Intelligence API",
-    description="Backend intelligence service providing real-time chokepoint vessel tracking and market telemetry.",
-    version="1.0.0",
+    description="Backend intelligence service providing real-time chokepoint vessel tracking and multi-agent market intelligence.",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -33,7 +33,7 @@ def read_root():
     return {
         "status": "online",
         "service": "Oil Chokepoint Intelligence API",
-        "endpoints": ["/api/chokepoints", "/api/ingest-trigger"]
+        "endpoints": ["/api/chokepoints", "/api/ingest-trigger", "/api/run-analysis"]
     }
 
 @app.get("/api/chokepoints")
@@ -65,3 +65,15 @@ def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
 def trigger_ingestion():
     result = fetch_imf_chokepoint_data()
     return {"message": "Ingestion executed successfully", "details": result}
+
+@app.post("/api/run-analysis")
+def trigger_agent_analysis():
+    try:
+        result = run_agent_pipeline()
+        return {
+            "status": "success",
+            "timestamp": str(datetime.now()),
+            "analysis": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
