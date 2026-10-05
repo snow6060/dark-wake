@@ -1,11 +1,18 @@
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file immediately on startup
+load_dotenv()
+
 from fastapi import FastAPI, Depends, HTTPException
 from sqlalchemy.orm import Session
+from datetime import datetime
+from contextlib import asynccontextmanager
+
 from src.database import SessionLocal, init_db, ChokepointRecord
 from src.ingestion import fetch_imf_chokepoint_data
 from src.scheduler import start_scheduler
 from src.agents import run_agent_pipeline
-from contextlib import asynccontextmanager
-from datetime import datetime
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
