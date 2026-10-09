@@ -3,66 +3,51 @@ import pandas as pd
 import numpy as np
 
 def get_technical_indicators() -> str:
+    """
+    Fetches recent historical data for Brent Crude (BZ=F), computes
+    technical indicators (SMA 20/50, RSI, OBV trend), and returns a formatted report string.
+    """
     try:
-        # Fetch daily data for Brent Crude
-        df = yf.download("BZ=F", period="3mo", interval="1d", progress=False)
-        if df.empty or len(df) < 20:
-            return "Insufficient price history for advanced technical structure analysis."
+        ticker = yf.Ticker("BZ=F")
+        df = ticker.history(period="60d", interval="1d")
         
-        # Flatten multi-index columns if present from newer yfinance versions
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
+        if df.empty or len(df) < 15:
+            return "Insufficient price history available for quantitative technical computation."
 
-        close = df['Close']
-        high = df['High']
-        low = df['Low']
-        volume = df['Volume']
-        
-        current_price = float(close.iloc[-1])
-        
-        # 1. Moving Averages & Trend Context
-        sma_20 = float(close.rolling(20).mean().iloc[-1])
-        sma_50 = float(close.rolling(50).mean().iloc[-1])
-        
-        # 2. Volume Profile & Point of Control (POC) approximation
-        price_bins = pd.cut(low.combine_first(high), bins=10)
-        vol_profile = volume.groupby(price_bins).sum()
-        max_vol_bin = vol_profile.idxmax()
-        poc_price = float(max_vol_bin.mid) if hasattr(max_vol_bin, 'mid') else current_price
+        close_prices = df["Close"]
+        volume = df["Volume"] if "Volume" in df.columns else pd.Series([0]*len(df), index=df.index)
 
-        # 3. Liquidity Pools (Recent Swing Highs and Lows for Stop Hunts)
-        recent_high = float(high.iloc[-10:-1].max())
-        recent_low = float(low.iloc[-10:-1].min())
-        
-        # 4. Fair Value Gap (FVG) / Imbalance Detection
-        fvg_detected = "None identified"
-        for i in range(len(df) - 3, len(df)):
-            if i >= 2:
-                prev_high = high.iloc[i-2]
-                curr_low = low.iloc[i]
-                curr_high = high.iloc[i]
-                prev_low = low.iloc[i-2]
-                
-                if curr_low > prev_high:
-                    fvg_detected = f"Bullish FVG (Imbalance zone between ${prev_high:.2f} and ${curr_low:.2f})"
-                    break
-                elif curr_high < prev_low:
-                    fvg_detected = f"Bearish FVG (Imbalance zone between ${curr_high:.2f} and ${curr_low:.2f})"
-                    break
+        # Calculate Moving Averages
+        sma_20 = close_prices.rolling(window=20).mean().iloc[-1]
+        sma_50 = close_prices.rolling(window=min(50, len(df))).mean().iloc[-1]
+        current_close = close_prices.iloc[-1]
 
-        # 5. Institutional Accumulation / Distribution Proxy (OBV Trend)
-        obv = (np.sign(close.diff()) * volume).fillna(0).cumsum()
-        obv_trend = "Accumulation (OBV rising with price)" if obv.iloc[-1] > obv.iloc[-5] else "Distribution (OBV lagging/falling)"
+        # Calculate Relative Strength Index (RSI - 14 period)
+        delta = close_prices.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        current_rsi = rsi.iloc[-1] if not rsi.empty and not pd.isna(rsi.iloc[-1]) else 50.0
 
-        report = f"""
-- **Current Price:** ${current_price:.2f}
-- **20 SMA:** ${sma_20:.2f} | **50 SMA:** ${sma_50:.2f}
-- **Volume Point of Control (POC):** ${poc_price:.2f} (Fair value node where heavy institutional volume traded)
-- **Immediate Liquidity Pools:** Buy-side liquidity / Resistance at ${recent_high:.2f}, Sell-side liquidity / Support at ${recent_low:.2f}
-- **Market Structure / FVG:** {fvg_detected}
-- **Institutional Flow (OBV Proxy):** {obv_trend}
-"""
-        return report.strip()
-        
+        # Calculate On-Balance Volume (OBV) trend check
+        obv = (np.sign(close_prices.diff()) * volume).fillna(0).cumsum()
+        obv_trend = "Accumulation (Rising OBV)" if obv.iloc[-1] > obv.iloc[-5] else "Distribution (Declining OBV)"
+
+        # Liquidity zone / Support & Resistance estimations
+        recent_high = close_prices.tail(20).max()
+        recent_low = close_prices.tail(20).min()
+
+        report = (
+            f"--- Quantitative Technical Analysis Report ---\n"
+            f"- Current Price: ${current_close:.2f}\n"
+            f"- SMA 20: ${sma_20:.2f} | SMA 50: ${sma_50:.2f}\n"
+            f"- RSI (14): {current_rsi:.1f}\n"
+            f"- Volume Trend (OBV): {obv_trend}\n"
+            f"- 20-Day Liquidity Range: Support @ ${recent_low:.2f} | Resistance @ ${recent_high:.2f}\n"
+            f"- Trend Bias: {'Bullish momentum structure' if current_close > sma_20 else 'Bearish pressure / below short-term mean'}"
+        )
+        return report
+
     except Exception as e:
-        return f"Error computing advanced institutional technicals: {e}"
+        return f"Error computing technical indicators: {str(e)}"

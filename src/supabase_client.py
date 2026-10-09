@@ -9,8 +9,8 @@ supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
         supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-        print("✅ Connected to Supabase successfully.")
+        print("[Supabase] Connected successfully.")
     except Exception as e:
-        print(f"⚠️ Failed to initialize Supabase client: {e}")
+        print(f"[Supabase Warning] Failed to initialize client: {e}")
 else:
-    print("⚠️ Supabase URL or Key not found in environment variables. Running in local fallback mode.")
+    print("[Supabase Warning] Credentials not found; using local storage only.")

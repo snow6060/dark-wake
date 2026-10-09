@@ -1,0 +1,11 @@
+.env
+.git
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+*.db
+logs
+dark-wake
+tests

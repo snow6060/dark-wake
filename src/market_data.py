@@ -7,9 +7,9 @@ def get_brent_price():
         todays_data = ticker.history(period="1d")
         if not todays_data.empty:
             return round(todays_data['Close'].iloc[-1], 2)
-        return 100.00
-    except Exception:
-        return 100.00
+        raise RuntimeError("Yahoo Finance returned no Brent price history.")
+    except Exception as exc:
+        raise RuntimeError(f"Could not retrieve a live Brent price from Yahoo Finance: {exc}") from exc
 
 def get_oil_news():
     rss_url = "https://news.google.com/rss/search?q=oil+prices+brent+crude&hl=en-US&gl=US&ceid=US:en"
