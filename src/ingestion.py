@@ -11,7 +11,11 @@ from src.supabase_client import supabase
 RSS_FEEDS = [
     {"name": "OilPrice Energy News", "url": "https://oilprice.com/rss/main"},
     {"name": "CNBC Energy", "url": "https://www.cnbc.com/id/19836768/device/rss/rss.html"},
-    {"name": "EIA Today in Energy", "url": "https://www.eia.gov/rss/todayinenergy.xml"},
+    {
+        "name": "EIA Today in Energy",
+        "url": "https://www.eia.gov/rss/todayinenergy.xml",
+        "timeout": 30,
+    },
 ]
 
 PORTWATCH_QUERY_URL = (
@@ -233,6 +237,13 @@ def analyze_sentiment(title: str) -> str:
     else:
         return "Neutral"
 
+
+def _fetch_rss_feed(feed_info: dict, headers: dict):
+    request = urllib.request.Request(feed_info["url"], headers=headers)
+    with urllib.request.urlopen(request, timeout=feed_info.get("timeout", 10)) as response:
+        return feedparser.parse(response.read())
+
+
 def fetch_and_store_rss_headlines():
     """
     Background job function to fetch RSS feeds using a browser User-Agent header,
@@ -253,10 +264,7 @@ def fetch_and_store_rss_headlines():
     try:
         for feed_info in RSS_FEEDS:
             try:
-                req = urllib.request.Request(feed_info["url"], headers=headers)
-                with urllib.request.urlopen(req, timeout=10) as response:
-                    xml_data = response.read()
-                    parsed_feed = feedparser.parse(xml_data)
+                parsed_feed = _fetch_rss_feed(feed_info, headers)
             except Exception as net_err:
                 print(f"[RSS Warning] Could not fetch {feed_info['name']}: {net_err}")
                 continue
