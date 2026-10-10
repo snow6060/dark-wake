@@ -95,14 +95,13 @@ When the Space is running, check `https://<your-space-url>/health` and `https://
 
 ## Build the Windows desktop app for the hosted API
 
-The API URL is embedded into the frontend at build time. From `dark-wake`, set it to the HTTPS base URL of your running Space and build the installer:
+The production frontend is configured to use the Render backend URL in `dark-wake/.env.production`. From the repository root, build the Windows installer:
 
 ```powershell
-$env:VITE_API_BASE_URL = "https://<your-space-url>"
-npm run tauri build
+npm --prefix dark-wake run tauri -- build --bundles nsis
 ```
 
-Tauri writes the Windows installer under `dark-wake/src-tauri/target/release/bundle/`. Build again whenever the backend URL changes. Never put Google AI or Supabase secret keys in the desktop build.
+Tauri writes the Windows installer under `dark-wake/src-tauri/target/release/bundle/nsis/`. Update `.env.production` and rebuild whenever the backend URL changes. Never put Google AI or Supabase secret keys in the desktop build.
 
 ## Data sources
 
