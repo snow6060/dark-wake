@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
+import { getDailyTrafficDisplay } from './dailyTrafficDisplay.js';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000')
   .replace(/\/+$/, '');
@@ -31,7 +32,6 @@ export default function App() {
 
   // Chokepoint telemetry data state
   const [chokepointRecords, setChokepointRecords] = useState([]);
-  const [liveChokepoints, setLiveChokepoints] = useState({});
   const [portwatchDataAsOf, setPortwatchDataAsOf] = useState(null);
   const [chokepointTab, setChokepointTab] = useState('hormuz');
   const [showFullChokepointModal, setShowFullChokepointModal] = useState(false);
@@ -90,7 +90,6 @@ export default function App() {
             setChokepointRecords(resData.data);
           }
           setPortwatchDataAsOf(resData.portwatch_data_as_of || null);
-          setLiveChokepoints(resData.live || {});
         })
         .catch(() => console.log("Chokepoint API offline."));
     };
@@ -147,9 +146,8 @@ export default function App() {
     const name = (r.chokepoint || '').toLowerCase();
     return name.includes('bab') || name.includes('mandeb');
   });
-  const babLive = liveChokepoints['Bab el-Mandeb'];
-  const babHasCurrentSnapshot = Boolean(babLive?.fresh);
-  const babHasLive = babHasCurrentSnapshot && babLive.vessels_observed !== null;
+  const hormuzTraffic = getDailyTrafficDisplay(hormuzLatest);
+  const babTraffic = getDailyTrafficDisplay(babLatest);
 
   // Prepare chart data for last 90 days vs full history
   const sortedCPData = [...filteredChokepoints].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -235,32 +233,18 @@ export default function App() {
               <div className="card">
                 <p className="card-label">Strait of Hormuz Traffic</p>
                 <p className="card-value">
-                  {hormuzLatest ? `${hormuzLatest.tankers ?? 0} tankers/day` : 'Unavailable'}
+                  {hormuzTraffic.value}
                 </p>
                 <p className="card-subdate">
-                  {hormuzLatest ? `${hormuzLatest.source || 'IMF PortWatch'} data as of ${hormuzLatest.date}` : 'No source data available'}
+                  {hormuzTraffic.date}
                 </p>
-                <span className="source-tag">
-                  Source: {hormuzLatest ? `${hormuzLatest.source || 'IMF PortWatch'} daily tanker transits` : 'Unavailable'}
-                </span>
+                <span className="source-tag">{hormuzTraffic.source}</span>
               </div>
               <div className="card">
                 <p className="card-label">Bab el-Mandeb Traffic</p>
-                <p className="card-value">
-                  {babHasCurrentSnapshot
-                    ? babHasLive ? `${babLive.tankers_identified.toLocaleString()} tankers in zone` : 'No recent AIS reports'
-                    : babLatest ? `${babLatest.tankers ?? 0} tankers/day` : 'Unavailable'}
-                </p>
-                <p className="card-subdate">
-                  {babHasCurrentSnapshot
-                    ? `${babLive.source} last AIS position ${new Date(babLive.observed_at).toLocaleString()}${!babHasLive && babLatest ? ` · Daily data ${babLatest.date}` : ''}`
-                    : babLatest ? `${babLatest.source || 'IMF PortWatch'} data as of ${babLatest.date}` : 'No source data available'}
-                </p>
-                <span className="source-tag">
-                  Source: {babHasLive
-                    ? `TankerMap · ${babLive.vessels_observed} tankers currently in zone`
-                    : babHasCurrentSnapshot ? 'TankerMap · no recent vessel positions' : `${babLatest?.source || 'IMF PortWatch'} daily tanker transits`}
-                </span>
+                <p className="card-value">{babTraffic.value}</p>
+                <p className="card-subdate">{babTraffic.date}</p>
+                <span className="source-tag">{babTraffic.source}</span>
               </div>
               <div className="card">
                 <p className="card-label">News Sources</p>
