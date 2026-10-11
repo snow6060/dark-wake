@@ -10,7 +10,7 @@ from google import genai
 from langgraph.graph import END, StateGraph
 
 from src.database import ChokepointRecord, SessionLocal, TankerMapDailyRecord
-from src.market_data import get_brent_price
+from src.market_data import get_brent_market_snapshot
 from src.supabase_client import supabase
 from src.technicals import get_technical_indicators
 
@@ -331,23 +331,7 @@ def _gather_headlines() -> tuple[list[dict[str, Any]], str]:
 
 
 def _gather_market_context() -> dict[str, Any]:
-    price = float(get_brent_price())
-    market_rows: list[dict[str, Any]] = []
-    if supabase:
-        try:
-            market_rows = _fetch_recent_rows(
-                "market_prices",
-                "updated_at",
-                5,
-                "symbol,price,change_pct,updated_at",
-            )
-        except Exception:
-            market_rows = []
-
-    market_record = next(
-        (row for row in market_rows if row.get("symbol") in ("BZ=F", "BrentCash", "brentCash")),
-        None,
-    )
+    market_snapshot = get_brent_market_snapshot()
     telemetry, telemetry_source = _gather_telemetry()
     headlines, news_source = _gather_headlines()
     try:
@@ -358,8 +342,12 @@ def _gather_market_context() -> dict[str, Any]:
     return {
         "symbol": "BZ=F",
         "instrument": "Brent Crude (brentCash)",
-        "price": price,
-        "daily_change_pct": market_record.get("change_pct") if market_record else None,
+        "price": market_snapshot["price"],
+        "daily_change_pct": market_snapshot["change_pct"],
+        "market_status": market_snapshot["market_status"],
+        "market_is_closed": market_snapshot["market_is_closed"],
+        "price_basis": market_snapshot["price_basis"],
+        "price_as_of": market_snapshot["price_as_of"],
         "technical_report": technical_report[:700],
         "telemetry": telemetry,
         "telemetry_source": telemetry_source,
@@ -437,13 +425,29 @@ def _summarize_previous_debate(
 def _context_prompt(state: DebateState) -> str:
     context = state["market_context"]
     prior_summary = state.get("previous_debates", [])
+    if context.get("market_is_closed"):
+        instruction = (
+            "The Brent market is closed for the weekend. The supplied price is the latest "
+            "available daily close, not a live weekend quote. Use its price_as_of timestamp, "
+            "do not imply that the price is moving while the market is closed, and frame any "
+            "assessment as based on the last close plus available weekend news and data."
+        )
+    elif context.get("price_basis") == "last_close":
+        instruction = (
+            "An intraday Brent quote is unavailable. The supplied price is the latest available "
+            "daily close, not a live quote. Use its price_as_of timestamp and do not describe it "
+            "as current intraday pricing."
+        )
+    else:
+        instruction = (
+            "Use the latest available market data as authoritative; compare it with the "
+            "two-sentence prior summary."
+        )
     return json.dumps(
         {
             "live_context": context,
             "previous_debate_summary": prior_summary,
-            "instruction": (
-                "Use live data as authoritative; compare it with the two-sentence prior summary."
-            ),
+            "instruction": instruction,
         },
         ensure_ascii=False,
         default=str,

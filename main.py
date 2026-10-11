@@ -5,7 +5,6 @@ load_dotenv()
 
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-import yfinance as yf
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
@@ -31,6 +30,7 @@ from src.agents import (
     get_recent_debates,
     run_debate_if_due,
 )
+from src.market_data import get_brent_market_snapshot
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -234,12 +234,28 @@ def get_war_room_debates():
     try:
         run_debate_if_due()
         return get_recent_debates()
-    except GoogleAIQuotaError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as refresh_error:
+        print(
+            "[War Room Warning] Debate refresh failed; trying to return the latest "
+            f"successful analysis. {type(refresh_error).__name__}: {refresh_error}"
+        )
+        try:
+            debates = get_recent_debates()
+        except Exception as history_error:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "The debate refresh failed and the latest saved analysis could not be "
+                    f"loaded: {history_error}"
+                ),
+            ) from history_error
+        if debates:
+            return debates
+        if isinstance(refresh_error, GoogleAIQuotaError):
+            raise HTTPException(status_code=429, detail=str(refresh_error)) from refresh_error
+        if isinstance(refresh_error, RuntimeError):
+            raise HTTPException(status_code=503, detail=str(refresh_error)) from refresh_error
+        raise HTTPException(status_code=500, detail=str(refresh_error)) from refresh_error
 
 @app.post("/api/war-room/run")
 def run_war_room_debate():
@@ -255,37 +271,9 @@ def run_war_room_debate():
 @app.get("/api/market/prices")
 def get_market_prices():
     try:
-        brent = yf.Ticker("BZ=F")
-        hist = brent.history(period="1d", interval="5m")
-
-        if hist.empty:
-            hist = brent.history(period="2d")
-
-        if not hist.empty:
-            current_price = float(hist["Close"].iloc[-1])
-            prev_close = float(hist["Close"].iloc[0]) if len(hist) > 1 else current_price
-            change_pct = ((current_price - prev_close) / prev_close) * 100 if prev_close else 0.0
-
-            price_history = []
-            for idx, row in hist.tail(12).iterrows():
-                time_str = idx.strftime("%I:%M %p")
-                price_history.append({"time": time_str, "price": round(float(row["Close"]), 2)})
-        else:
-            current_price = 100.95
-            change_pct = -0.61
-            price_history = [
-                { "time": "02:00 AM", "price": 100.50 },
-                { "time": "03:00 AM", "price": 100.95 }
-            ]
-
-        return {
-            "symbol": "BrentCash (BZ=F)",
-            "price": round(current_price, 2),
-            "change_pct": round(change_pct, 2),
-            "history": price_history
-        }
-    except Exception as e:
-        return {"error": str(e), "price": 100.95, "change_pct": -0.61, "history": []}
+        return get_brent_market_snapshot()
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 @app.get("/api/news/feed")
 def get_news_feed():

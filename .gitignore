@@ -7,3 +7,4 @@ data/
 *.db
 logs/
 .DS_Store
+app_description.md

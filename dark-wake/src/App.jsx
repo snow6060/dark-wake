@@ -52,7 +52,7 @@ export default function App() {
 
   useEffect(() => {
     const fetchData = () => {
-      // Fetch live Brent price
+      // Fetch the latest available Brent market snapshot
       fetch(`${API_BASE_URL}/api/market/prices`)
         .then(res => res.json())
         .then(data => {
@@ -196,7 +196,7 @@ export default function App() {
         <div className="header-left">
           <div className="status-dot"></div>
           <h1 className="app-title">DARK WAKE</h1>
-          <span className="badge">MARITIME INTEL v0.1</span>
+          <span className="badge">MARITIME INTEL v0.2.0</span>
         </div>
 
         <nav className="nav-tabs">
@@ -228,7 +228,11 @@ export default function App() {
                     {Number(brentData.change_pct) >= 0 ? `+${brentData.change_pct}%` : `${brentData.change_pct}%`}
                   </span>
                 </p>
-                <span className="source-tag">Source: Yahoo Finance</span>
+                <span className="source-tag">
+                  {brentData.price_basis === 'last_close'
+                    ? `Yahoo Finance · Last close ${brentData.price_as_of || ''}`
+                    : 'Source: Yahoo Finance'}
+                </span>
               </div>
               <div className="card">
                 <p className="card-label">Strait of Hormuz Traffic</p>
@@ -264,7 +268,11 @@ export default function App() {
                 <div className="panel-header-flex">
                   <div>
                     <h3 className="panel-title">Brent Crude Oil Futures (BZ=F)</h3>
-                    <span className="chart-subtext">NY Mercantile // Intraday Spot Trend</span>
+                    <span className="chart-subtext">
+                      {brentData.price_basis === 'last_close'
+                        ? 'NY Mercantile // Daily Closing Prices'
+                        : 'NY Mercantile // Intraday Spot Trend'}
+                    </span>
                   </div>
                   <span className="source-badge">Yahoo Finance</span>
                 </div>
@@ -506,17 +514,29 @@ export default function App() {
                   <div className="debate-history">
                     <span className="war-section-index">RECENT DEBATE RUNS</span>
                     <div className="debate-history-list">
-                      {warRoomDebates.slice(0, 5).map((debate, index) => (
-                        <div
-                          key={debate.id || debate.created_at || index}
-                          className={`debate-history-item ${activeDebate?.id === debate.id ? 'selected' : ''}`}
-                        >
-                          <span>{new Date(debate.created_at).toLocaleString()}</span>
-                          <b className={`history-signal signal-${(debate.signal || debate.verdict?.signal || 'hold').toLowerCase()}`}>
-                            {debate.signal || debate.verdict?.signal || '—'}
-                          </b>
-                        </div>
-                      ))}
+                      {warRoomDebates.slice(0, 5).map((debate, index) => {
+                        const isSelected = activeDebate?.id && debate.id
+                          ? activeDebate.id === debate.id
+                          : activeDebate?.created_at === debate.created_at;
+                        const signal = debate.signal || debate.verdict?.signal || '—';
+                        const dateLabel = new Date(debate.created_at).toLocaleString();
+
+                        return (
+                          <button
+                            type="button"
+                            key={debate.id || debate.created_at || index}
+                            className={`debate-history-item ${isSelected ? 'selected' : ''}`}
+                            onClick={() => setActiveDebate(debate)}
+                            aria-pressed={Boolean(isSelected)}
+                            aria-label={`Load ${signal} debate from ${dateLabel}`}
+                          >
+                            <span>{dateLabel}</span>
+                            <b className={`history-signal signal-${signal.toLowerCase()}`}>
+                              {signal}
+                            </b>
+                          </button>
+                        );
+                      })}
                     </div>
                   </div>
                 )}
@@ -540,8 +560,16 @@ export default function App() {
                     </div>
                     <div className="verdict-price">
                       <div><span>BRENT / BZ=F</span><strong>${Number(activeDebate.market_price).toFixed(2)}</strong></div>
-                      <span>LIVE SNAPSHOT</span>
+                      <span>{activeDebate.market_context?.price_basis === 'intraday' ? 'LIVE SNAPSHOT' : 'LAST CLOSE'}</span>
                     </div>
+                    {activeDebate.market_context?.market_is_closed && (
+                      <p className="market-closed-note">
+                        Market closed for the weekend · using the last close
+                        {activeDebate.market_context.price_as_of
+                          ? ` from ${activeDebate.market_context.price_as_of.slice(0, 10)}`
+                          : ''}
+                      </p>
+                    )}
                     <div className="direction-grid">
                       <div><span>SHORT-TERM</span><b className={`trend-${activeDebate.verdict.short_term_trend.toLowerCase()}`}>{activeDebate.verdict.short_term_trend}</b></div>
                       <div><span>LONG-TERM</span><b className={`trend-${activeDebate.verdict.long_term_trend.toLowerCase()}`}>{activeDebate.verdict.long_term_trend}</b></div>
