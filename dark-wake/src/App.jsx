@@ -206,7 +206,7 @@ export default function App() {
         <div className="header-left">
           <div className="status-dot"></div>
           <h1 className="app-title">DARK WAKE</h1>
-          <span className="badge">MARITIME INTEL v0.2.0</span>
+          <span className="badge">MARITIME INTEL v0.2.1</span>
         </div>
 
         <nav className="nav-tabs">
