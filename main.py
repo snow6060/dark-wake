@@ -232,30 +232,9 @@ def trigger_agent_analysis():
 @app.get("/api/war-room/debates")
 def get_war_room_debates():
     try:
-        run_debate_if_due()
         return get_recent_debates()
-    except Exception as refresh_error:
-        print(
-            "[War Room Warning] Debate refresh failed; trying to return the latest "
-            f"successful analysis. {type(refresh_error).__name__}: {refresh_error}"
-        )
-        try:
-            debates = get_recent_debates()
-        except Exception as history_error:
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "The debate refresh failed and the latest saved analysis could not be "
-                    f"loaded: {history_error}"
-                ),
-            ) from history_error
-        if debates:
-            return debates
-        if isinstance(refresh_error, GoogleAIQuotaError):
-            raise HTTPException(status_code=429, detail=str(refresh_error)) from refresh_error
-        if isinstance(refresh_error, RuntimeError):
-            raise HTTPException(status_code=503, detail=str(refresh_error)) from refresh_error
-        raise HTTPException(status_code=500, detail=str(refresh_error)) from refresh_error
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
 @app.post("/api/war-room/run")
 def run_war_room_debate():

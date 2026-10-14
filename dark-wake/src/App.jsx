@@ -102,10 +102,12 @@ export default function App() {
   useEffect(() => {
     if (activeTab !== 'warroom') return;
     let cancelled = false;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 20000);
 
     setWarRoomLoading(true);
     setWarRoomError('');
-    fetch(`${API_BASE_URL}/api/war-room/debates`)
+    fetch(`${API_BASE_URL}/api/war-room/debates`, { signal: controller.signal })
       .then(async response => {
         const data = await response.json();
         if (!response.ok) throw new Error(data.detail || 'Could not load debate history.');
@@ -118,13 +120,21 @@ export default function App() {
         setWarRoomError('');
       })
       .catch(error => {
-        if (!cancelled) setWarRoomError(error.message || 'War Room API is unavailable.');
+        if (cancelled) return;
+        setWarRoomError(error.name === 'AbortError'
+          ? 'Loading saved debate history timed out. Check the backend connection and try again.'
+          : error.message || 'War Room API is unavailable.');
       })
       .finally(() => {
+        clearTimeout(timeout);
         if (!cancelled) setWarRoomLoading(false);
       });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+      controller.abort();
+    };
   }, [activeTab]);
 
   // Filter chokepoint data by selected tab ('hormuz' or 'bab')
@@ -446,7 +456,7 @@ export default function App() {
                 <p>Multi-agent adversarial analysis · Instrument <b>brentCash / BZ=F</b></p>
               </div>
               <div className="daily-debate-status" aria-live="polite">
-                <span>{warRoomLoading ? 'CHECKING DEBATE STATUS' : 'AUTO-RUN · EVERY 12 HOURS'}</span>
+                <span>{warRoomLoading ? 'LOADING SAVED ANALYSIS' : 'SCHEDULED RUN · 09:00 / 21:00 LONDON'}</span>
                 <span className="daily-debate-last-run">
                   LAST ANALYSIS · {warRoomLoading && !activeDebate
                     ? 'LOADING…'
@@ -459,7 +469,7 @@ export default function App() {
             {warRoomLoading && (
               <div className="war-room-progress" role="status">
                 <span className="war-room-progress-pulse" />
-                Agents are reviewing live market, shipping, and geopolitical data against prior debate history…
+                Loading the latest saved debate…
               </div>
             )}
 
@@ -505,8 +515,8 @@ export default function App() {
                     <div className="empty-radar">◎</div>
                     <h3>{warRoomLoading ? 'Assembling analyst desk' : 'No debate runs yet'}</h3>
                     <p>{warRoomLoading
-                      ? 'Agents are assembling today’s market analysis.'
-                      : 'The daily debate will initialize automatically when no analysis exists for today.'}</p>
+                      ? 'Loading saved analysis from the backend.'
+                      : 'No debate has been saved yet. The backend checks for a scheduled run at 09:00 and 21:00 Europe/London.'}</p>
                   </div>
                 )}
 
