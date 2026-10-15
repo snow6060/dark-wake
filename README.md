@@ -62,6 +62,11 @@ For browser-only frontend development, use `npm run dev`. By default, the client
 
 ## Build and sign the Windows installer with SignPath
 
+Dark Wake is applying to use the SignPath Foundation for code signing its
+open-source Windows releases. Once the project is approved and signing is
+enabled, signed releases will identify SignPath Foundation as the certificate
+provider. Until then, published installers may be unsigned.
+
 The `.github/workflows/windows-signpath.yml` workflow builds the NSIS installer
 on a GitHub-hosted Windows runner, uploads the unsigned installer to GitHub
 Actions, submits that artifact to SignPath, verifies the returned Authenticode
@@ -77,11 +82,9 @@ signing policy. Apply to the SignPath Foundation and complete its project
 configuration first. The Foundation must approve the project and signing
 requests; signing and SmartScreen reputation are not guaranteed.
 
-Before applying to the Foundation, add an appropriate open-source license to
-the repository. **The repository currently has no `LICENSE` file**, so it may
-not qualify for the Foundation program until a license is selected and added.
-Choose a license that reflects the rights you intend to grant; this workflow
-does not select one.
+The repository is licensed under the MIT License; see `LICENSE`. The
+Foundation must still approve the project before this workflow can submit
+signing requests.
 
 After SignPath provides the organization, project, signing-policy, and
 artifact-configuration values, configure the repository at **Settings →
