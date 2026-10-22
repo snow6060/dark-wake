@@ -1,3 +1,4 @@
+import json
 import unittest
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
@@ -5,7 +6,11 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 import main
-from src.agents import _context_prompt, run_debate_if_due
+from src.agents import (
+    _context_prompt,
+    _summarize_previous_debate,
+    run_debate_if_due,
+)
 
 
 class WarRoomLoadingTests(unittest.TestCase):
@@ -23,6 +28,65 @@ class WarRoomLoadingTests(unittest.TestCase):
         self.assertIn("closed for the weekend", prompt)
         self.assertIn("not a live weekend quote", prompt)
         self.assertIn("price_as_of", prompt)
+
+    def test_context_includes_compact_prior_analyses_for_each_agent(self):
+        previous = {
+            "created_at": "2026-10-21T09:00:00+00:00",
+            "market_price": 82.5,
+            "signal": "BUY",
+            "verdict": '{"rationale":"Supply disruptions may tighten the market."}',
+            "transcript": json.dumps([
+                {
+                    "role": "technical",
+                    "message": "RSI momentum is positive.",
+                },
+                {"role": "bullish", "message": "Hormuz risks support prices."},
+                {"role": "bearish", "message": "Weak demand may pressure crude."},
+            ]),
+        }
+
+        summary = _summarize_previous_debate([previous])
+        prompt = _context_prompt(
+            {
+                "market_context": {"price": 84.0},
+                "previous_debates": summary,
+            }
+        )
+
+        self.assertEqual(summary[0]["created_at"], previous["created_at"])
+        self.assertEqual(summary[0]["market_price"], 82.5)
+        self.assertEqual(summary[0]["signal"], "BUY")
+        self.assertEqual(
+            summary[0]["agent_analyses"],
+            {
+                "technical": "RSI momentum is positive.",
+                "bullish": "Hormuz risks support prices.",
+                "bearish": "Weak demand may pressure crude.",
+            },
+        )
+        self.assertIn('"verdict_rationale": "Supply disruptions may tighten the market."', prompt)
+        self.assertIn('"price": 84.0', prompt)
+        self.assertIn("Treat prior analysis as a hypothesis, not a fact or an anchor", prompt)
+
+    def test_prior_agent_analysis_is_bounded_for_prompt_size(self):
+        previous = {
+            "transcript": [
+                {
+                    "role": role,
+                    "message": "market evidence " * 300,
+                }
+                for role in ("technical", "bullish", "bearish")
+            ]
+        }
+
+        summary = _summarize_previous_debate([previous])[0]
+
+        self.assertTrue(
+            all(
+                len(analysis) <= 900
+                for analysis in summary["agent_analyses"].values()
+            )
+        )
 
     @patch("main.run_debate_if_due")
     @patch("main.get_recent_debates")

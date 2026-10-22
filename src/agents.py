@@ -374,17 +374,16 @@ def _load_previous_debates() -> list[dict[str, Any]]:
         ) from exc
 
 
-def _one_sentence(text: Any, max_chars: int) -> str:
+def _compact_analysis(text: Any, max_chars: int = 900) -> str:
     normalized = re.sub(r"\s+", " ", str(text or "")).strip()
-    normalized = re.sub(r"[.!?]+", ";", normalized).strip(" ;")
     if len(normalized) > max_chars:
         normalized = normalized[: max_chars - 1].rsplit(" ", 1)[0] + "…"
-    return normalized or "No concise rationale was saved"
+    return normalized or "No prior analysis was saved"
 
 
 def _summarize_previous_debate(
     debates: list[dict[str, Any]],
-) -> list[dict[str, str]]:
+) -> list[dict[str, Any]]:
     if not debates:
         return []
 
@@ -401,25 +400,41 @@ def _summarize_previous_debate(
             transcript = json.loads(transcript)
         except json.JSONDecodeError:
             transcript = []
-    debate_point = next(
-        (
-            message.get("message")
-            for message in reversed(transcript)
-            if isinstance(message, dict) and message.get("message")
-        ),
-        verdict.get("rationale", ""),
-    )
+    if not isinstance(verdict, dict):
+        verdict = {}
+    if not isinstance(transcript, list):
+        transcript = []
+
+    analyses = {
+        role: _compact_analysis(
+            next(
+                (
+                    message.get("message")
+                    for message in transcript
+                    if isinstance(message, dict)
+                    and message.get("role") == role
+                    and message.get("message")
+                ),
+                "",
+            )
+        )
+        for role in ("technical", "bullish", "bearish")
+    }
     signal = str(previous.get("signal") or verdict.get("signal") or "unknown").upper()
     price = previous.get("market_price")
-    price_text = f" at ${float(price):.2f}" if price is not None else ""
-    first_sentence = (
-        f"Previous verdict: {signal}{price_text}; "
-        f"{_one_sentence(verdict.get('rationale'), 170)}."
-    )
-    second_sentence = (
-        f"Key debate point: {_one_sentence(debate_point, 170)}."
-    )
-    return [{"summary": f"{first_sentence} {second_sentence}"}]
+    try:
+        price = float(price) if price is not None else None
+    except (TypeError, ValueError):
+        price = None
+    return [{
+        "created_at": previous.get("created_at"),
+        "market_price": price,
+        "signal": signal,
+        "short_term_trend": previous.get("short_term_trend") or verdict.get("short_term_trend"),
+        "long_term_trend": previous.get("long_term_trend") or verdict.get("long_term_trend"),
+        "verdict_rationale": _compact_analysis(verdict.get("rationale"), 650),
+        "agent_analyses": analyses,
+    }]
 
 
 def _context_prompt(state: DebateState) -> str:
@@ -439,9 +454,13 @@ def _context_prompt(state: DebateState) -> str:
             "as current intraday pricing."
         )
     else:
-        instruction = (
-            "Use the latest available market data as authoritative; compare it with the "
-            "two-sentence prior summary."
+        instruction = "Use the latest available market data as authoritative."
+    if prior_summary:
+        instruction += (
+            " Compare your current findings with the prior analysis for your role, identify "
+            "what remains supported or has changed, and reassess the earlier view against "
+            "current evidence. Treat prior analysis as a hypothesis, not a fact or an anchor; "
+            "do not claim a forecast was correct without evidence."
         )
     return json.dumps(
         {
@@ -573,8 +592,9 @@ def _risk_manager(state: DebateState) -> dict[str, Any]:
         f"{_context_prompt(state)}\n\n"
         f"OPENING ARGUMENTS:\n{json.dumps({key: state[key] for key in ('initial_technical', 'initial_bullish', 'initial_bearish')}, ensure_ascii=False)}\n\n"
         "Deliver a risk-managed verdict for the current Brent price. Reconcile the technical "
-        "analysis with the bull's case and bear's rebuttal. Compare with the previous run and "
-        "avoid false precision. "
+        "analysis with the bull's case and bear's rebuttal. Compare the prior verdict and all "
+        "three prior agent analyses with current evidence; say what changed and avoid treating "
+        "the old forecast as established fact. Avoid false precision. "
         "Respond ONLY as JSON with this exact shape: "
         '{"signal":"BUY|SELL|HOLD","conviction":0,"short_term_trend":"BULLISH|BEARISH|NEUTRAL",'
         '"long_term_trend":"BULLISH|BEARISH|NEUTRAL","support":0.0,"resistance":0.0,'
