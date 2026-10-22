@@ -1,3 +1,4 @@
+import calendar
 from datetime import date, datetime, timedelta, timezone
 import urllib.request
 import feedparser
@@ -7,6 +8,9 @@ from sqlalchemy import and_
 from src.database import ChokepointRecord, SessionLocal, init_db
 from src.supabase_client import supabase
 
+RSS_HEADLINE_LIMIT = 50
+RSS_HEADLINE_PRUNE_BATCH_SIZE = 1000
+
 # Targeted energy & geopolitical RSS feeds.
 RSS_FEEDS = [
     {"name": "OilPrice Energy News", "url": "https://oilprice.com/rss/main"},
@@ -15,6 +19,20 @@ RSS_FEEDS = [
         "name": "EIA Today in Energy",
         "url": "https://www.eia.gov/rss/todayinenergy.xml",
         "timeout": 30,
+    },
+    {
+        "name": "Google News: Energy Markets",
+        "url": (
+            "https://news.google.com/rss/search?q=oil+prices+OR+Brent+crude"
+            "+OR+energy+markets&hl=en-US&gl=US&ceid=US:en"
+        ),
+    },
+    {
+        "name": "Google News: Energy Geopolitics",
+        "url": (
+            "https://news.google.com/rss/search?q=(oil+OR+energy)"
+            "+(war+OR+sanctions+OR+Hormuz+OR+OPEC)&hl=en-US&gl=US&ceid=US:en"
+        ),
     },
 ]
 
@@ -244,6 +262,50 @@ def _fetch_rss_feed(feed_info: dict, headers: dict):
         return feedparser.parse(response.read())
 
 
+def _rss_entry_created_at(entry: dict) -> str:
+    published = entry.get("published_parsed") or entry.get("updated_parsed")
+    if published:
+        return datetime.fromtimestamp(
+            calendar.timegm(published),
+            tz=timezone.utc,
+        ).isoformat()
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _prune_rss_headlines() -> int:
+    """Keep only the 50 newest RSS headlines in Supabase."""
+    deleted_count = 0
+    while True:
+        response = (
+            supabase.table("rss_news")
+            .select("id")
+            .order("created_at", desc=True)
+            .range(
+                RSS_HEADLINE_LIMIT,
+                RSS_HEADLINE_LIMIT + RSS_HEADLINE_PRUNE_BATCH_SIZE - 1,
+            )
+            .execute()
+        )
+        stale_ids = [
+            article["id"]
+            for article in (response.data or [])
+            if article.get("id") is not None
+        ]
+        if not stale_ids:
+            break
+
+        (
+            supabase.table("rss_news")
+            .delete()
+            .in_("id", stale_ids)
+            .execute()
+        )
+        deleted_count += len(stale_ids)
+        if len(stale_ids) < RSS_HEADLINE_PRUNE_BATCH_SIZE:
+            break
+    return deleted_count
+
+
 def fetch_and_store_rss_headlines():
     """
     Background job function to fetch RSS feeds using a browser User-Agent header,
@@ -291,7 +353,7 @@ def fetch_and_store_rss_headlines():
                         "link": link,
                         "sentiment": sentiment,
                         "time_ago": "Just now",
-                        "created_at": datetime.utcnow().isoformat()
+                        "created_at": _rss_entry_created_at(entry),
                     }
                     if supports_summary:
                         payload["summary"] = summary
@@ -310,3 +372,10 @@ def fetch_and_store_rss_headlines():
 
     except Exception as e:
         print(f"[Error in RSS Worker]: {e}")
+    finally:
+        try:
+            deleted_count = _prune_rss_headlines()
+            if deleted_count:
+                print(f"[RSS Worker] Removed {deleted_count} old headlines; keeping the newest 50.")
+        except Exception as cleanup_error:
+            print(f"[RSS Error] Could not enforce the 50-headline limit: {cleanup_error}")

@@ -1,7 +1,13 @@
 import unittest
+import time
 from unittest.mock import MagicMock, patch
 
-from src.ingestion import RSS_FEEDS, _fetch_rss_feed
+from src.ingestion import (
+    RSS_FEEDS,
+    _fetch_rss_feed,
+    _prune_rss_headlines,
+    _rss_entry_created_at,
+)
 
 
 class RssFeedFetchTests(unittest.TestCase):
@@ -32,6 +38,57 @@ class RssFeedFetchTests(unittest.TestCase):
             )
 
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 10)
+
+    @patch("src.ingestion.supabase")
+    def test_prunes_all_rows_beyond_newest_50(self, supabase_client):
+        query = supabase_client.table.return_value
+        query.select.return_value = query
+        query.order.return_value = query
+        query.range.return_value = query
+        query.execute.side_effect = [
+            MagicMock(data=[{"id": 51}, {"id": 52}]),
+            MagicMock(data=[]),
+        ]
+        query.delete.return_value.in_.return_value.execute.return_value = MagicMock(
+            data=[{"id": 51}, {"id": 52}]
+        )
+
+        deleted_count = _prune_rss_headlines()
+
+        self.assertEqual(deleted_count, 2)
+        query.select.assert_called_once_with("id")
+        query.order.assert_called_once_with("created_at", desc=True)
+        query.range.assert_called_once_with(50, 1049)
+        query.delete.return_value.in_.assert_called_once_with("id", [51, 52])
+
+    def test_uses_rss_publication_time_for_headline_ordering(self):
+        entry = {"published_parsed": time.gmtime(1792656000)}
+
+        self.assertEqual(
+            _rss_entry_created_at(entry),
+            "2026-10-22T08:00:00+00:00",
+        )
+
+    def test_news_endpoint_requests_newest_rows_before_limiting(self):
+        import main
+
+        client = MagicMock()
+        query = client.table.return_value
+        query.select.return_value = query
+        query.order.return_value = query
+        query.limit.return_value.execute.return_value.data = [
+            {"id": 1, "created_at": "2026-10-22T00:00:00+00:00"}
+        ]
+
+        with (
+            patch("main.supabase", client),
+            patch("main.get_tankermap_news", return_value=[]),
+        ):
+            headlines = main.get_news_feed()
+
+        self.assertEqual(headlines[0]["id"], 1)
+        query.order.assert_called_once_with("created_at", desc=True)
+        query.limit.assert_called_once_with(50)
 
 
 if __name__ == "__main__":

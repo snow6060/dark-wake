@@ -18,7 +18,11 @@ from src.database import (
 )
 from src.straits_live import STRAITS_LIVE_MAX_AGE, fetch_straits_live_hormuz_data
 from src.supabase_client import supabase
-from src.ingestion import fetch_imf_chokepoint_data, fetch_and_store_rss_headlines
+from src.ingestion import (
+    RSS_HEADLINE_LIMIT,
+    fetch_imf_chokepoint_data,
+    fetch_and_store_rss_headlines,
+)
 from src.scheduler import start_scheduler
 from src.tankermap import (
     TANKERMAP_LIVE_MAX_AGE,
@@ -260,7 +264,13 @@ def get_news_feed():
     supabase_error = None
     try:
         if supabase:
-            response = supabase.table("rss_news").select("*").limit(50).execute()
+            response = (
+                supabase.table("rss_news")
+                .select("*")
+                .order("created_at", desc=True)
+                .limit(RSS_HEADLINE_LIMIT)
+                .execute()
+            )
             data = response.data or []
     except Exception as e:
         supabase_error = e
