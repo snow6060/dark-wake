@@ -25,6 +25,7 @@ class DebateState(TypedDict, total=False):
 
 
 MAX_AGENT_OUTPUT_TOKENS = 1200
+MAX_INTERACTION_CONTINUATIONS = 2
 MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
 GOOGLE_MODEL = "gemini-3.8-flash"
@@ -89,7 +90,39 @@ def _google_interaction(
             generation_config={"max_output_tokens": max_tokens},
             store=False,
         )
-        return str(response.output_text or "").strip()
+        output_parts = []
+        for continuation_count in range(MAX_INTERACTION_CONTINUATIONS + 1):
+            output_text = str(response.output_text or "")
+            if output_text:
+                output_parts.append(output_text)
+
+            status = getattr(response.status, "value", response.status)
+            if status == "completed":
+                return "".join(output_parts).strip()
+
+            continuation_token = response.continuation_token
+            if status == "incomplete" and not continuation_token:
+                raise RuntimeError(
+                    "Google AI interaction was incomplete and provided no continuation token."
+                )
+            if status != "incomplete":
+                raise RuntimeError(
+                    "Google AI interaction ended without a complete response "
+                    f"(status: {status or 'unknown'})."
+                )
+            if continuation_count == MAX_INTERACTION_CONTINUATIONS:
+                raise RuntimeError(
+                    "Google AI interaction remained incomplete after "
+                    f"{MAX_INTERACTION_CONTINUATIONS} continuation attempts."
+                )
+
+            response = client.interactions.create(
+                model=model,
+                continuation_token=continuation_token,
+                generation_config={"max_output_tokens": max_tokens},
+                store=False,
+            )
+        raise RuntimeError("Google AI interaction ended without a complete response.")
     finally:
         if client is not None:
             client.close()
@@ -161,6 +194,7 @@ def _invoke(
                         "resource_exhausted",
                         "quota",
                         "rate limit",
+                        "interaction was incomplete and provided no continuation token",
                         "temporarily unavailable",
                         "service unavailable",
                         "too many requests",
@@ -484,10 +518,15 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
     agent = AGENTS[role]
     role_instructions = {
         "technical": (
-            "Provide a detailed quantitative technical analysis of the supplied indicators. "
-            "Discuss price action, moving averages, RSI, MACD, volume behavior, MFI, OBV, and "
-            "liquidity zones where the data supports it. Cite supplied values and timeframes; "
-            "explicitly say when an indicator or value is unavailable. Do not invent figures."
+            "Provide a concise, evidence-based technical analysis in plain text, using short "
+            "labeled lines without Markdown headings, bullets, emphasis markers, or separators. "
+            "Use live_context.price and live_context.daily_change_pct for the live quote and "
+            "daily change, preserving the daily change to two decimal places; distinguish that "
+            "quote from the daily-history indicators in "
+            "technical_report. Discuss the supplied moving averages, RSI, OBV, and liquidity "
+            "range. State that MACD, MFI, or volume details are unavailable if not supplied. "
+            "Do not invent values or imply a direction for a zero/near-zero daily change. "
+            "Finish a complete analysis with the overall technical bias."
         ),
         "bullish": (
             "Build a substantive bullish oil-market defense using the supplied macroeconomic, "

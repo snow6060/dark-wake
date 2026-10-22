@@ -8,12 +8,124 @@ from fastapi import HTTPException
 import main
 from src.agents import (
     _context_prompt,
+    _google_interaction,
+    _invoke,
+    _initial_analysis,
     _summarize_previous_debate,
     run_debate_if_due,
 )
 
 
 class WarRoomLoadingTests(unittest.TestCase):
+    @patch("src.agents.time.sleep")
+    @patch(
+        "src.agents._google_interaction",
+        side_effect=[
+            RuntimeError(
+                "Google AI interaction was incomplete and provided no continuation token."
+            ),
+            "Complete response.",
+        ],
+    )
+    @patch("src.agents._google_api_key", return_value="configured")
+    def test_invoke_retries_incomplete_response_without_continuation(
+        self,
+        _api_key,
+        google_interaction,
+        sleep,
+    ):
+        result = _invoke("system", "prompt", "model")
+
+        self.assertEqual(result, "Complete response.")
+        self.assertEqual(google_interaction.call_count, 2)
+        sleep.assert_called_once_with(3)
+
+    @patch("src.agents.genai.Client")
+    def test_google_interaction_continues_incomplete_response(self, client_factory):
+        client = client_factory.return_value
+        partial = type(
+            "Interaction",
+            (),
+            {
+                "status": "incomplete",
+                "output_text": "A technical analysis ",
+                "continuation_token": "continue-token",
+            },
+        )()
+        complete = type(
+            "Interaction",
+            (),
+            {
+                "status": "completed",
+                "output_text": "with a complete conclusion.",
+                "continuation_token": None,
+            },
+        )()
+        client.interactions.create.side_effect = [partial, complete]
+
+        result = _google_interaction("system", "prompt", "model", 1200)
+
+        self.assertEqual(
+            result,
+            "A technical analysis with a complete conclusion.",
+        )
+        self.assertEqual(client.interactions.create.call_count, 2)
+        client.interactions.create.assert_any_call(
+            model="model",
+            continuation_token="continue-token",
+            generation_config={"max_output_tokens": 1200},
+            store=False,
+        )
+        client.close.assert_called_once_with()
+
+    @patch("src.agents.genai.Client")
+    def test_google_interaction_rejects_incomplete_response_without_continuation(
+        self,
+        client_factory,
+    ):
+        client = client_factory.return_value
+        response = type(
+            "Interaction",
+            (),
+            {
+                "status": "incomplete",
+                "output_text": "Truncated technical assessment",
+                "continuation_token": None,
+            },
+        )()
+        client.interactions.create.return_value = response
+
+        with self.assertRaisesRegex(RuntimeError, "provided no continuation token"):
+            _google_interaction("system", "prompt", "model", 1200)
+
+        client.close.assert_called_once_with()
+
+    @patch("src.agents._invoke", return_value="Complete technical assessment.")
+    def test_technical_prompt_requires_plain_text_and_supplied_market_values(
+        self,
+        invoke,
+    ):
+        state = {
+            "market_context": {
+                "price": 112.44,
+                "daily_change_pct": 0.01,
+                "technical_report": "RSI (14): 76.6",
+            },
+            "previous_debates": [],
+            "initial_technical": "",
+            "initial_bullish": "",
+            "initial_bearish": "",
+        }
+
+        _initial_analysis("technical", state)
+
+        prompt = invoke.call_args.args[1]
+        self.assertIn("plain text", prompt)
+        self.assertIn("live_context.price", prompt)
+        self.assertIn("daily change", prompt)
+        self.assertIn("two decimal places", prompt)
+        self.assertIn("Do not invent values", prompt)
+
     def test_weekend_last_close_is_explicit_in_agent_context(self):
         prompt = _context_prompt(
             {
