@@ -11,7 +11,7 @@ from src.supabase_client import supabase
 RSS_HEADLINE_LIMIT = 50
 RSS_HEADLINE_PRUNE_BATCH_SIZE = 1000
 
-# Targeted energy & geopolitical RSS feeds.
+# Targeted energy-market RSS feeds.
 RSS_FEEDS = [
     {"name": "OilPrice Energy News", "url": "https://oilprice.com/rss/main"},
     {"name": "CNBC Energy", "url": "https://www.cnbc.com/id/19836768/device/rss/rss.html"},
@@ -239,7 +239,7 @@ def fetch_imf_chokepoint_data():
 
 def analyze_sentiment(title: str) -> str:
     """
-    Keyword-based sentiment analyzer classifying crude oil & geopolitical impact
+    Keyword-based sentiment analyzer classifying crude oil and supply-chain impact
     into Bullish, Bearish, or Neutral.
     """
     text = title.lower()
@@ -315,7 +315,7 @@ def fetch_and_store_rss_headlines():
         print("[Supabase Warning] Credentials missing. Skipping RSS background fetch.")
         return
 
-    print("[RSS Worker] Fetching latest geopolitical RSS feeds...")
+    print("[RSS Worker] Fetching latest energy-market RSS feeds...")
     supports_summary = True
 
     # Use a standard browser User-Agent so major news networks don't block the scraper

@@ -19,8 +19,8 @@ class DebateState(TypedDict, total=False):
     market_context: dict[str, Any]
     previous_debates: list[dict[str, Any]]
     initial_technical: str
-    initial_bullish: str
-    initial_bearish: str
+    initial_supply_thesis: str
+    initial_demand_thesis: str
     verdict: dict[str, Any]
 
 
@@ -41,20 +41,20 @@ AGENTS = {
             "behavior, MFI, OBV, and liquidity zones."
         ),
     },
-    "bullish": {
-        "name": "Bull Case",
+    "supply": {
+        "name": "Supply Thesis",
         "system": (
-            "You are an aggressive Bullish Oil Market Analyst. Keep under 250 words."
+            "You are an evidence-led oil-market supply analyst. Keep under 250 words."
         ),
     },
-    "bearish": {
-        "name": "Bear Case",
+    "demand": {
+        "name": "Demand Thesis",
         "system": (
-            "You are a professional Bearish Oil Market Analyst. Keep under 250 words."
+            "You are an evidence-led oil-market demand analyst. Keep under 250 words."
         ),
     },
-    "risk": {
-        "name": "Risk Manager",
+    "synthesis": {
+        "name": "Desk Signal & Risk Synthesis",
     },
 }
 
@@ -71,7 +71,7 @@ def _google_api_key() -> str | None:
 
 def _model_for_role(role: str) -> str:
     if role not in AGENTS:
-        raise ValueError(f"Unknown War Room agent role: {role}")
+        raise ValueError(f"Unknown Strategy Desk agent role: {role}")
     return GOOGLE_MODEL
 
 
@@ -238,7 +238,7 @@ def _invoke(
 
         if attempt + 1 < MAX_MODEL_ATTEMPTS:
             print(
-                f"[War Room Warning] Google AI model {model} did not complete "
+                f"[Strategy Desk Warning] Google AI model {model} did not complete "
                 f"({attempt + 1}/{MAX_MODEL_ATTEMPTS}); retrying."
             )
             time.sleep(MODEL_RETRY_DELAY_SECONDS * (attempt + 1))
@@ -429,7 +429,7 @@ def _load_previous_debates() -> list[dict[str, Any]]:
         )
     except Exception as exc:
         raise RuntimeError(
-            "War Room history is unavailable. Run the provided war_room_debates SQL in Supabase, "
+            "Strategy Desk history is unavailable. Run the provided war_room_debates SQL in Supabase, "
             f"then refresh the backend. Details: {exc}"
         ) from exc
 
@@ -465,6 +465,11 @@ def _summarize_previous_debate(
     if not isinstance(transcript, list):
         transcript = []
 
+    role_aliases = {
+        "technical": ("technical",),
+        "supply_thesis": ("supply_thesis", "supply", "bullish"),
+        "demand_thesis": ("demand_thesis", "demand", "bearish"),
+    }
     analyses = {
         role: _compact_analysis(
             next(
@@ -472,13 +477,13 @@ def _summarize_previous_debate(
                     message.get("message")
                     for message in transcript
                     if isinstance(message, dict)
-                    and message.get("role") == role
+                    and message.get("role") in legacy_roles
                     and message.get("message")
                 ),
                 "",
             )
         )
-        for role in ("technical", "bullish", "bearish")
+        for role, legacy_roles in role_aliases.items()
     }
     signal = str(previous.get("signal") or verdict.get("signal") or "unknown").upper()
     price = previous.get("market_price")
@@ -554,40 +559,51 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
             "Do not invent values or imply a direction for a zero/near-zero daily change. "
             "Finish a complete analysis with the overall technical bias."
         ),
-        "bullish": (
-            "Build a substantive bullish oil-market defense using the supplied macroeconomic, "
-            "geopolitical, chokepoint, news, supply, and demand evidence. Address Hormuz and "
-            "Bab-el-Mandeb transit risks and OPEC+ only where supported by the supplied context. "
-            "Connect the evidence to the technical analysis; do not invent facts."
+        "supply": (
+            "Build an evidence-led oil-market supply thesis using the supplied macroeconomic, "
+            "maritime route density, bottleneck, news, supply, and demand data. Discuss transit "
+            "conditions at Hormuz and Bab-el-Mandeb and OPEC+ only where supported by the "
+            "supplied context. Connect the evidence to the technical analysis; do not invent facts."
+        ),
+        "demand": (
+            "Build an evidence-led oil-market demand thesis using the supplied macroeconomic, "
+            "maritime route density, bottleneck, news, supply, and demand data. Discuss demand "
+            "conditions and alternative interpretations only where supported by the supplied "
+            "context. Connect the evidence to the technical analysis; do not invent facts."
         ),
     }[role]
     prompt = _context_prompt(state)
-    if role == "bullish":
+    if role == "supply":
         prompt += (
             f"\n\nTECHNICAL ANALYSIS:\n{state['initial_technical']}\n\n"
-            "Use the technical evidence along with market context in your bullish defense."
+            "Use the technical evidence along with market context in your supply-side thesis."
         )
     report = _invoke(
         agent["system"],
         f"{prompt}\n\n{role_instructions}",
         _model_for_role(role),
     )
-    return {f"initial_{role}": report}
+    state_keys = {
+        "technical": "initial_technical",
+        "supply": "initial_supply_thesis",
+        "demand": "initial_demand_thesis",
+    }
+    return {state_keys[role]: report}
 
 
-def _bearish_rebuttal(state: DebateState) -> dict[str, Any]:
-    agent = AGENTS["bearish"]
+def _demand_thesis(state: DebateState) -> dict[str, Any]:
+    agent = AGENTS["demand"]
     prompt = (
         f"{_context_prompt(state)}\n\n"
         f"TECHNICAL ANALYSIS:\n{state['initial_technical']}\n\n"
-        f"BULLISH ANALYST'S ARGUMENT:\n{state['initial_bullish']}\n\n"
-        "Give a substantive, evidence-led bearish rebuttal. Address the bull's strongest claim, "
-        "then assess macroeconomic conditions, geopolitical/chokepoint risks, OPEC+ supply, "
-        "demand, and the main downside catalysts where the supplied evidence supports them. "
-        "Connect the evidence to technical price action. Do not invent facts."
+        f"SUPPLY THESIS:\n{state['initial_supply_thesis']}\n\n"
+        "Give a substantive, evidence-led demand thesis that tests the supply thesis. Assess "
+        "macroeconomic conditions, maritime route density and bottlenecks, OPEC+ supply, demand, "
+        "and relevant market catalysts only where supported by supplied evidence. Connect the "
+        "evidence to technical price action. Do not invent facts."
     )
-    report = _invoke(agent["system"], prompt, _model_for_role("bearish"))
-    return {"initial_bearish": report}
+    report = _invoke(agent["system"], prompt, _model_for_role("demand"))
+    return {"initial_demand_thesis": report}
 
 
 def _parse_verdict(response: str) -> dict[str, Any]:
@@ -608,7 +624,7 @@ def _parse_verdict(response: str) -> dict[str, Any]:
     if verdict is None:
         preview = re.sub(r"\s+", " ", candidate)[:240] or "<empty response>"
         raise ValueError(
-            f"Risk Manager response did not contain a valid JSON object: {preview}"
+            f"Desk Signal & Risk Synthesis response did not contain a valid JSON object: {preview}"
         )
 
     raw_signal = re.sub(r"[^A-Z]", "", str(verdict.get("signal", "")).upper())
@@ -624,17 +640,17 @@ def _parse_verdict(response: str) -> dict[str, Any]:
         "NEUTRAL": "HOLD",
     }.get(raw_signal)
     if signal is None:
-        raise ValueError("Risk Manager returned an invalid signal.")
+        raise ValueError("Desk Signal & Risk Synthesis returned an invalid signal.")
     short_trend = str(verdict.get("short_term_trend", "")).upper()
     long_trend = str(verdict.get("long_term_trend", "")).upper()
     allowed_trends = {"BULLISH", "BEARISH", "NEUTRAL"}
     if short_trend not in allowed_trends or long_trend not in allowed_trends:
-        raise ValueError("Risk Manager returned an invalid trend direction.")
+        raise ValueError("Desk Signal & Risk Synthesis returned an invalid trend direction.")
 
     support = float(verdict["support"])
     resistance = float(verdict["resistance"])
     if not 0 < support < resistance:
-        raise ValueError("Risk Manager returned invalid support/resistance levels.")
+        raise ValueError("Desk Signal & Risk Synthesis returned invalid support/resistance levels.")
 
     return {
         "signal": signal,
@@ -651,13 +667,13 @@ def _parse_verdict(response: str) -> dict[str, Any]:
     }
 
 
-def _risk_manager(state: DebateState) -> dict[str, Any]:
+def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
     context = state["market_context"]
     prompt = (
         f"{_context_prompt(state)}\n\n"
-        f"OPENING ARGUMENTS:\n{json.dumps({key: state[key] for key in ('initial_technical', 'initial_bullish', 'initial_bearish')}, ensure_ascii=False)}\n\n"
-        "Deliver a risk-managed verdict for the current Brent price. Reconcile the technical "
-        "analysis with the bull's case and bear's rebuttal. Compare the prior verdict and all "
+        f"DESK ANALYSES:\n{json.dumps({key: state[key] for key in ('initial_technical', 'initial_supply_thesis', 'initial_demand_thesis')}, ensure_ascii=False)}\n\n"
+        "Deliver a risk-managed synthesis for the current Brent price. Reconcile the technical "
+        "analysis with the supply and demand theses. Compare the prior synthesis and all "
         "three prior agent analyses with current evidence; say what changed and avoid treating "
         "the old forecast as established fact. Avoid false precision. "
         "Respond ONLY as JSON with this exact shape: "
@@ -672,11 +688,11 @@ def _risk_manager(state: DebateState) -> dict[str, Any]:
         "This is analytical information, not a guarantee."
     )
     system = (
-        "You are the independent oil desk risk manager. Decide, do not average. "
+        "You are the independent energy desk signal and risk analyst. Decide, do not average. "
         "Return valid JSON only. The signal field must be exactly BUY, SELL, or HOLD. "
         "Do not use LONG, SHORT, WAIT, or other signal labels."
     )
-    model = _model_for_role("risk")
+    model = _model_for_role("synthesis")
     try:
         response = _invoke(
             system,
@@ -702,7 +718,7 @@ def _risk_manager(state: DebateState) -> dict[str, Any]:
             return {"verdict": _parse_verdict(repaired_response)}
         except (ValueError, KeyError, TypeError) as repair_error:
             raise RuntimeError(
-                "Risk Manager returned an unusable verdict after one JSON-format retry: "
+                "Desk Signal & Risk Synthesis returned an unusable result after one JSON-format retry: "
                 f"{repair_error}"
             ) from repair_error
 
@@ -711,46 +727,56 @@ def compile_trading_graph():
     workflow = StateGraph(DebateState)
     workflow.add_node("gather_context", _gather_context_node)
     workflow.add_node("technical_analysis", lambda state: _initial_analysis("technical", state))
-    workflow.add_node("bullish_case", lambda state: _initial_analysis("bullish", state))
-    workflow.add_node("bearish_rebuttal", _bearish_rebuttal)
-    workflow.add_node("risk_manager", _risk_manager)
+    workflow.add_node("supply_thesis", lambda state: _initial_analysis("supply", state))
+    workflow.add_node("demand_thesis", _demand_thesis)
+    workflow.add_node("desk_signal_synthesis", _desk_signal_synthesis)
     workflow.set_entry_point("gather_context")
     workflow.add_edge("gather_context", "technical_analysis")
-    workflow.add_edge("technical_analysis", "bullish_case")
-    workflow.add_edge("bullish_case", "bearish_rebuttal")
-    workflow.add_edge("bearish_rebuttal", "risk_manager")
-    workflow.add_edge("risk_manager", END)
+    workflow.add_edge("technical_analysis", "supply_thesis")
+    workflow.add_edge("supply_thesis", "demand_thesis")
+    workflow.add_edge("demand_thesis", "desk_signal_synthesis")
+    workflow.add_edge("desk_signal_synthesis", END)
     return workflow.compile()
 
 
 def _transcript_for_state(state: dict[str, Any]) -> list[dict[str, str]]:
     phases = {
         "technical": "initial-analysis",
-        "bullish": "initial-analysis",
-        "bearish": "bearish-rebuttal",
+        "supply": "initial-analysis",
+        "demand": "bearish-rebuttal",
+    }
+    client_roles = {
+        "technical": "technical",
+        "supply": "bullish",
+        "demand": "bearish",
+    }
+    state_keys = {
+        "technical": "initial_technical",
+        "supply": "initial_supply_thesis",
+        "demand": "initial_demand_thesis",
     }
     opening_messages = [
         {
             "phase": phases[role],
             "agent": AGENTS[role]["name"],
-            "role": role,
-            "message": state[f"initial_{role}"],
+            "role": client_roles[role],
+            "message": state[state_keys[role]],
         }
-        for role in ("technical", "bullish", "bearish")
+        for role in ("technical", "supply", "demand")
     ]
     return opening_messages
 
 
 def run_agent_pipeline() -> dict[str, Any]:
     if not supabase:
-        raise RuntimeError("Supabase must be configured to save War Room debate history.")
+        raise RuntimeError("Supabase must be configured to save Strategy Desk analysis history.")
 
     previous_debates = _summarize_previous_debate(_load_previous_debates())
     initial_state: DebateState = {
         "previous_debates": previous_debates,
         "initial_technical": "",
-        "initial_bullish": "",
-        "initial_bearish": "",
+        "initial_supply_thesis": "",
+        "initial_demand_thesis": "",
         "verdict": {},
     }
     final_state = compile_trading_graph().invoke(initial_state)
@@ -809,11 +835,11 @@ def run_debate_if_due() -> dict[str, Any]:
 
 def get_recent_debates(limit: int = 10) -> list[dict[str, Any]]:
     if not supabase:
-        raise RuntimeError("Supabase must be configured to load War Room debate history.")
+        raise RuntimeError("Supabase must be configured to load Strategy Desk analysis history.")
     try:
         return _fetch_recent_rows("war_room_debates", "created_at", limit)
     except Exception as exc:
         raise RuntimeError(
-            "War Room history is unavailable. Run the provided war_room_debates SQL in Supabase. "
+            "Strategy Desk history is unavailable. Run the provided war_room_debates SQL in Supabase. "
             f"Details: {exc}"
         ) from exc

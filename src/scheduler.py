@@ -33,7 +33,7 @@ def start_scheduler():
     )
     # Run RSS headline scraping every 60 seconds
     scheduler.add_job(fetch_and_store_rss_headlines, 'interval', seconds=60, id='rss_fetch_job', replace_existing=True)
-    # Refresh the War Room every 12 hours at 09:00 and 21:00 London time.
+    # Refresh Strategy Desk analysis every 12 hours at 09:00 and 21:00 London time.
     scheduler.add_job(
         run_debate_if_due,
         'cron',
@@ -47,4 +47,4 @@ def start_scheduler():
     )
 
     scheduler.start()
-    print("⏰ Background APScheduler initialized for PortWatch, TankerMap, Straits.live, RSS, and War Room analysis.")
+    print("⏰ Background APScheduler initialized for PortWatch, TankerMap, Straits.live, RSS, and Strategy Desk analysis.")

@@ -47,8 +47,8 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(
-    title="Oil Chokepoint Intelligence API",
-    description="Backend intelligence service providing real-time chokepoint vessel tracking and multi-agent market intelligence.",
+    title="Dark Wake Strategy Desk API",
+    description="Backend service for energy markets, maritime route analytics, and supply chain intelligence.",
     version="2.1.0",
     lifespan=lifespan
 )
@@ -79,8 +79,8 @@ def read_root():
             "/api/run-analysis",
             "/api/market/prices",
             "/api/news/feed",
-            "/api/war-room/debates",
-            "/api/war-room/run",
+            "/api/strategy-desk/debates",
+            "/api/strategy-desk/run",
         ]
     }
 
@@ -233,15 +233,17 @@ def trigger_agent_analysis():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/war-room/debates")
-def get_war_room_debates():
+@app.get("/api/strategy-desk/debates")
+@app.get("/api/war-room/debates", include_in_schema=False)
+def get_strategy_desk_debates():
     try:
         return get_recent_debates()
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
-@app.post("/api/war-room/run")
-def run_war_room_debate():
+@app.post("/api/strategy-desk/run")
+@app.post("/api/war-room/run", include_in_schema=False)
+def run_strategy_desk_analysis():
     try:
         return run_debate_if_due()
     except GoogleAIQuotaError as e:
@@ -250,6 +252,11 @@ def run_war_room_debate():
         raise HTTPException(status_code=503, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+get_war_room_debates = get_strategy_desk_debates
+run_war_room_debate = run_strategy_desk_analysis
+
 
 @app.get("/api/market/prices")
 def get_market_prices():

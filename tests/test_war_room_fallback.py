@@ -13,11 +13,13 @@ from src.agents import (
     _invoke,
     _initial_analysis,
     _summarize_previous_debate,
+    _transcript_for_state,
+    compile_trading_graph,
     run_debate_if_due,
 )
 
 
-class WarRoomLoadingTests(unittest.TestCase):
+class StrategyDeskLoadingTests(unittest.TestCase):
     @patch("src.agents.time.sleep")
     @patch(
         "src.agents._google_interaction",
@@ -146,8 +148,8 @@ class WarRoomLoadingTests(unittest.TestCase):
             },
             "previous_debates": [],
             "initial_technical": "",
-            "initial_bullish": "",
-            "initial_bearish": "",
+            "initial_supply_thesis": "",
+            "initial_demand_thesis": "",
         }
 
         _initial_analysis("technical", state)
@@ -158,6 +160,21 @@ class WarRoomLoadingTests(unittest.TestCase):
         self.assertIn("daily change", prompt)
         self.assertIn("two decimal places", prompt)
         self.assertIn("Do not invent values", prompt)
+
+    @patch("src.agents._invoke", return_value="Evidence-led supply view.")
+    def test_supply_analysis_updates_the_reframed_state_field(self, _invoke):
+        result = _initial_analysis(
+            "supply",
+            {
+                "market_context": {"price": 80.0},
+                "initial_technical": "Technical view",
+            },
+        )
+
+        self.assertEqual(
+            result,
+            {"initial_supply_thesis": "Evidence-led supply view."},
+        )
 
     def test_weekend_last_close_is_explicit_in_agent_context(self):
         prompt = _context_prompt(
@@ -205,8 +222,8 @@ class WarRoomLoadingTests(unittest.TestCase):
             summary[0]["agent_analyses"],
             {
                 "technical": "RSI momentum is positive.",
-                "bullish": "Hormuz risks support prices.",
-                "bearish": "Weak demand may pressure crude.",
+                "supply_thesis": "Hormuz risks support prices.",
+                "demand_thesis": "Weak demand may pressure crude.",
             },
         )
         self.assertIn('"verdict_rationale": "Supply disruptions may tighten the market."', prompt)
@@ -233,9 +250,80 @@ class WarRoomLoadingTests(unittest.TestCase):
             )
         )
 
+    def test_transcript_uses_reframed_agent_names_and_legacy_client_roles(self):
+        transcript = _transcript_for_state(
+            {
+                "initial_technical": "Technical view",
+                "initial_supply_thesis": "Supply view",
+                "initial_demand_thesis": "Demand view",
+            }
+        )
+
+        self.assertEqual(
+            [turn["agent"] for turn in transcript],
+            ["Technical Analysis", "Supply Thesis", "Demand Thesis"],
+        )
+        self.assertEqual(
+            [turn["role"] for turn in transcript],
+            ["technical", "bullish", "bearish"],
+        )
+
+    @patch(
+        "src.agents._invoke",
+        side_effect=[
+            "Technical view",
+            "Supply thesis",
+            "Demand thesis",
+            json.dumps(
+                {
+                    "signal": "HOLD",
+                    "conviction": 50,
+                    "short_term_trend": "NEUTRAL",
+                    "long_term_trend": "NEUTRAL",
+                    "support": 79.0,
+                    "resistance": 81.0,
+                    "rationale": "Balanced evidence.",
+                    "risk_factors": [],
+                }
+            ),
+        ],
+    )
+    @patch("src.agents._gather_market_context", return_value={"price": 80.0})
+    def test_refactored_analysis_graph_runs_all_thesis_stages(
+        self,
+        _gather_market_context,
+        invoke,
+    ):
+        result = compile_trading_graph().invoke(
+            {
+                "initial_technical": "",
+                "initial_supply_thesis": "",
+                "initial_demand_thesis": "",
+                "verdict": {},
+            }
+        )
+
+        self.assertEqual(result["initial_supply_thesis"], "Supply thesis")
+        self.assertEqual(result["initial_demand_thesis"], "Demand thesis")
+        self.assertEqual(result["verdict"]["signal"], "HOLD")
+        self.assertEqual(invoke.call_count, 4)
+
+    def test_strategy_desk_routes_are_documented_with_legacy_aliases(self):
+        paths = {route.path for route in main.app.routes}
+        documented_paths = set(main.app.openapi()["paths"])
+
+        self.assertIn("/api/strategy-desk/debates", paths)
+        self.assertIn("/api/strategy-desk/run", paths)
+        self.assertIn("/api/war-room/debates", paths)
+        self.assertIn("/api/war-room/run", paths)
+        self.assertIn("/api/strategy-desk/debates", documented_paths)
+        self.assertIn("/api/strategy-desk/run", documented_paths)
+        self.assertNotIn("/api/war-room/debates", documented_paths)
+        self.assertNotIn("/api/war-room/run", documented_paths)
+
     @patch("main.run_debate_if_due")
     @patch("main.get_recent_debates")
-    def test_debates_endpoint_returns_saved_runs_without_running_analysis(
+    def test_strategy_desk_endpoint_returns_saved_runs_without_running_analysis(
         self,
         get_recent_debates,
         run_debate,
@@ -243,7 +331,7 @@ class WarRoomLoadingTests(unittest.TestCase):
         saved = [{"id": "saved-debate", "market_price": 80.5}]
         get_recent_debates.return_value = saved
 
-        result = main.get_war_room_debates()
+        result = main.get_strategy_desk_debates()
 
         self.assertEqual(result, saved)
         get_recent_debates.assert_called_once_with()
@@ -251,13 +339,13 @@ class WarRoomLoadingTests(unittest.TestCase):
 
     @patch("main.run_debate_if_due")
     @patch("main.get_recent_debates", side_effect=RuntimeError("Supabase read failed"))
-    def test_debates_endpoint_surfaces_history_read_failure(
+    def test_strategy_desk_endpoint_surfaces_history_read_failure(
         self,
         get_recent_debates,
         run_debate,
     ):
         with self.assertRaises(HTTPException) as raised:
-            main.get_war_room_debates()
+            main.get_strategy_desk_debates()
 
         self.assertEqual(raised.exception.status_code, 503)
         self.assertEqual(raised.exception.detail, "Supabase read failed")
