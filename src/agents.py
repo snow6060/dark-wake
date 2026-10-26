@@ -28,6 +28,7 @@ MAX_AGENT_OUTPUT_TOKENS = 1200
 MAX_INTERACTION_CONTINUATIONS = 2
 MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
+GOOGLE_API_TIMEOUT_MS = 30_000
 GOOGLE_MODEL = "gemini-3.8-flash"
 DEBATE_REFRESH_INTERVAL = timedelta(hours=12)
 
@@ -82,7 +83,13 @@ def _google_interaction(
 ) -> str:
     client: genai.Client | None = None
     try:
-        client = genai.Client(api_key=_google_api_key())
+        client = genai.Client(
+            api_key=_google_api_key(),
+            http_options={
+                "timeout": GOOGLE_API_TIMEOUT_MS,
+                "retry_options": {"attempts": 1},
+            },
+        )
         response = client.interactions.create(
             model=model,
             input=prompt,
@@ -153,6 +160,19 @@ def _is_google_quota_error(exc: Exception) -> bool:
     )
 
 
+def _is_daily_google_quota_error(exc: Exception) -> bool:
+    error_text = _provider_error_detail(exc).lower()
+    return _is_google_quota_error(exc) and any(
+        phrase in error_text
+        for phrase in (
+            "per day",
+            "daily limit",
+            "daily quota",
+            "retry in",
+        )
+    )
+
+
 def _provider_error_detail(exc: Exception) -> str:
     response = getattr(exc, "response", None)
     body = getattr(response, "text", None)
@@ -182,6 +202,12 @@ def _invoke(
         except Exception as exc:
             status_code = _provider_status(exc)
             error_text = str(exc).lower()
+            if _is_daily_google_quota_error(exc):
+                raise GoogleAIQuotaError(
+                    "Google AI daily request quota is exhausted; retry after the "
+                    "provider's daily quota reset. "
+                    f"Details: {_provider_error_detail(exc)}"
+                ) from exc
             is_retryable = (
                 status_code in {408, 429, 500, 502, 503, 504}
                 or (isinstance(status_code, int) and status_code >= 500)

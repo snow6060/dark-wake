@@ -7,6 +7,7 @@ from fastapi import HTTPException
 
 import main
 from src.agents import (
+    GoogleAIQuotaError,
     _context_prompt,
     _google_interaction,
     _invoke,
@@ -17,6 +18,26 @@ from src.agents import (
 
 
 class WarRoomLoadingTests(unittest.TestCase):
+    @patch("src.agents.time.sleep")
+    @patch(
+        "src.agents._google_interaction",
+        side_effect=RuntimeError(
+            "429 rate limit exceeded: limit is 20 requests per day; retry in 22h."
+        ),
+    )
+    @patch("src.agents._google_api_key", return_value="configured")
+    def test_daily_google_quota_failure_does_not_retry(
+        self,
+        _api_key,
+        google_interaction,
+        sleep,
+    ):
+        with self.assertRaisesRegex(GoogleAIQuotaError, "daily request quota is exhausted"):
+            _invoke("system", "prompt", "model")
+
+        google_interaction.assert_called_once()
+        sleep.assert_not_called()
+
     @patch("src.agents.time.sleep")
     @patch(
         "src.agents._google_interaction",
@@ -41,7 +62,12 @@ class WarRoomLoadingTests(unittest.TestCase):
         sleep.assert_called_once_with(3)
 
     @patch("src.agents.genai.Client")
-    def test_google_interaction_continues_incomplete_response(self, client_factory):
+    @patch("src.agents._google_api_key", return_value="configured")
+    def test_google_interaction_continues_incomplete_response(
+        self,
+        _api_key,
+        client_factory,
+    ):
         client = client_factory.return_value
         partial = type(
             "Interaction",
@@ -68,6 +94,13 @@ class WarRoomLoadingTests(unittest.TestCase):
         self.assertEqual(
             result,
             "A technical analysis with a complete conclusion.",
+        )
+        client_factory.assert_called_once_with(
+            api_key="configured",
+            http_options={
+                "timeout": 30_000,
+                "retry_options": {"attempts": 1},
+            },
         )
         self.assertEqual(client.interactions.create.call_count, 2)
         client.interactions.create.assert_any_call(

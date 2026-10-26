@@ -1,0 +1,1 @@
+- Launched local self-hosted n8n instance via Docker container on port 5678.
