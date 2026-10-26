@@ -22,6 +22,7 @@ from src.ingestion import (
     RSS_HEADLINE_LIMIT,
     fetch_imf_chokepoint_data,
     fetch_and_store_rss_headlines,
+    sanitize_energy_news,
 )
 from src.scheduler import start_scheduler
 from src.tankermap import (
@@ -30,7 +31,7 @@ from src.tankermap import (
     get_tankermap_news,
 )
 from src.agents import (
-    GoogleAIQuotaError,
+    MetaModelQuotaError,
     get_recent_debates,
     run_debate_if_due,
 )
@@ -226,7 +227,7 @@ def trigger_agent_analysis():
             "timestamp": str(datetime.now()),
             "analysis": result
         }
-    except GoogleAIQuotaError as e:
+    except MetaModelQuotaError as e:
         raise HTTPException(status_code=429, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -246,7 +247,7 @@ def get_strategy_desk_debates():
 def run_strategy_desk_analysis():
     try:
         return run_debate_if_due()
-    except GoogleAIQuotaError as e:
+    except MetaModelQuotaError as e:
         raise HTTPException(status_code=429, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
@@ -283,9 +284,17 @@ def get_news_feed():
         supabase_error = e
 
     data.extend(get_tankermap_news())
+    sanitized_data = []
     for article in data:
+        title, category = sanitize_energy_news(str(article.get("title") or ""))
+        summary, _ = sanitize_energy_news(str(article.get("summary") or ""))
+        article["title"] = title
+        article["summary"] = summary
+        article["category"] = category
         if not article.get("published_at"):
             article["published_at"] = article.get("created_at")
+        sanitized_data.append(article)
+    data = sanitized_data
     data.sort(
         key=lambda article: article.get("published_at") or "",
         reverse=True,

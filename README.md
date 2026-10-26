@@ -10,7 +10,7 @@ pinned: false
 
 # Dark Wake
 
-Dark Wake combines oil-market prices, news, chokepoint vessel telemetry, and a multi-agent market analysis War Room. The desktop client is built with Tauri and React; the API is a FastAPI service.
+Dark Wake combines energy-market prices, commercial news, maritime-route telemetry, and a multi-agent Strategy Desk. The desktop client is built with Tauri and React; the API is a FastAPI service.
 
 ## Run locally
 
@@ -34,12 +34,14 @@ Dark Wake combines oil-market prices, news, chokepoint vessel telemetry, and a m
 4. Open the root `.env` file and set the API keys:
 
    ```dotenv
-   GOOGLE_API_KEY=your_google_api_key
+   META_MODEL_API_KEY=your_meta_model_api_key
+   META_MODEL_NAME=meta-models/muse-spark-open-1026
+   META_MODEL_API_BASE_URL=https://api.meta.ai/v1
    SUPABASE_URL=https://your-project.supabase.co
    SUPABASE_KEY=your_supabase_service_role_key
    ```
 
-   `GOOGLE_API_KEY` is used by the War Room. Supabase credentials are needed for saved War Room analyses and RSS news. Keep `.env` private; it is ignored by Git.
+   The Strategy Desk uses the Meta Model API. Supabase credentials are used for saved analyses, RSS news, and forecast-accuracy memory. Before enabling memory, execute [`sql/strategy_desk_memory.sql`](./sql/strategy_desk_memory.sql) in the Supabase SQL editor. Existing analysis history remains in the `war_room_debates` table. Keep `.env` private; it is ignored by Git.
 
 5. Start the API from the repository root:
 
@@ -154,15 +156,16 @@ The repository includes a Dockerfile and Hugging Face Docker Space metadata. Cre
 
 In the Space's **Settings → Variables and secrets**, add:
 
-- `GOOGLE_API_KEY` as a secret.
+- `META_MODEL_API_KEY` as a secret.
+- `META_MODEL_NAME` as a variable.
 - `SUPABASE_KEY` as a secret.
 - `SUPABASE_URL` as a variable.
 
-Do not upload `.env` or put secrets in the Dockerfile. The Space gets these values as runtime environment variables. The API uses SQLite at `/data/oil_intelligence.db` in the container. Space disk contents are not durable across restarts unless persistent storage is configured; use Supabase for War Room history and RSS data.
+Do not upload `.env` or put secrets in the Dockerfile. The Space gets these values as runtime environment variables. The API uses SQLite at `/data/oil_intelligence.db` in the container. Space disk contents are not durable across restarts unless persistent storage is configured; use Supabase for Strategy Desk history, forecast memory, and RSS data.
 
 When the Space is running, check `https://<your-space-url>/health` and `https://<your-space-url>/docs`. Copy the HTTPS base URL shown for your Space; do not include `/api` at the end.
 
-> **Availability note:** Hugging Face's current documentation says Docker Spaces require an eligible paid plan to create, even though CPU Basic hardware has no hourly usage charge. Free hardware may sleep after inactivity. While asleep, scheduled ingestion and War Room jobs do not run, and the first request after sleep may be slow. Check current plan and storage terms in your account; persistent storage and uninterrupted scheduling may require a paid configuration.
+> **Availability note:** Hugging Face's current documentation says Docker Spaces require an eligible paid plan to create, even though CPU Basic hardware has no hourly usage charge. Free hardware may sleep after inactivity. While asleep, scheduled ingestion and Strategy Desk jobs do not run, and the first request after sleep may be slow. Check current plan and storage terms in your account; persistent storage and uninterrupted scheduling may require a paid configuration.
 
 ## Build the Windows desktop app for the hosted API
 
@@ -172,7 +175,7 @@ The production frontend is configured to use the Render backend URL in `dark-wak
 npm --prefix dark-wake run tauri -- build --bundles nsis
 ```
 
-Tauri writes the Windows installer under `dark-wake/src-tauri/target/release/bundle/nsis/`. Update `.env.production` and rebuild whenever the backend URL changes. Never put Google AI or Supabase secret keys in the desktop build.
+Tauri writes the Windows installer under `dark-wake/src-tauri/target/release/bundle/nsis/`. Update `.env.production` and rebuild whenever the backend URL changes. Never put Meta Model API or Supabase secret keys in the desktop build.
 
 The installer bundles the offline WebView2 runtime and is therefore much larger
 than the small bootstrapper-based installer. The NSIS `/S` silent-install
@@ -183,6 +186,6 @@ switch remains supported.
 - Straits.live provides recent Hormuz vessel counts.
 - TankerMap public pages provide daily chokepoint transits, recent Bab el-Mandeb observations, and news headlines.
 - IMF PortWatch provides historical vessel and oil-flow estimates.
-- The War Room uses Gemini through the Google AI API and stores its analyses in Supabase.
+- The Strategy Desk uses the Meta Model API and stores its analyses in Supabase.
 
-The War Room refreshes every 12 hours at 09:00 and 21:00 Europe/London time. London daylight-saving changes are handled by the scheduler.
+The Strategy Desk refreshes once daily at 08:00 Europe/London time. London daylight-saving changes are handled by the scheduler.

@@ -6,39 +6,55 @@ from threading import Lock
 from datetime import datetime, timedelta, timezone
 from typing import Any, TypedDict
 
-from google import genai
 from langgraph.graph import END, StateGraph
+import requests
 
 from src.database import ChokepointRecord, SessionLocal, TankerMapDailyRecord
+from src.ingestion import sanitize_energy_news
 from src.market_data import get_brent_market_snapshot
 from src.supabase_client import supabase
-from src.technicals import get_technical_indicators
+from src.technicals import (
+    format_commodity_technical_report,
+    get_commodity_technical_indicators,
+)
 
 
 class DebateState(TypedDict, total=False):
     market_context: dict[str, Any]
     previous_debates: list[dict[str, Any]]
+    agent_accuracy: list[dict[str, Any]]
     initial_technical: str
     initial_supply_thesis: str
     initial_demand_thesis: str
+    supply_rebuttal_1: str
+    demand_rebuttal_1: str
+    supply_rebuttal_2: str
+    demand_rebuttal_2: str
+    technical_direction: str
+    supply_direction: str
+    demand_direction: str
     verdict: dict[str, Any]
 
 
 MAX_AGENT_OUTPUT_TOKENS = 1200
-MAX_INTERACTION_CONTINUATIONS = 2
 MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
-GOOGLE_API_TIMEOUT_MS = 30_000
-GOOGLE_MODEL = "gemini-3.8-flash"
-DEBATE_REFRESH_INTERVAL = timedelta(hours=12)
+META_API_TIMEOUT_SECONDS = 60
+META_MODEL_API_URL = "https://api.meta.ai/v1"
+META_MODEL_FALLBACKS = (
+    "meta-models/muse-spark-open",
+    "llama-3.1-70b-instruct",
+    "muse-spark-1.3",
+)
+DEBATE_REFRESH_INTERVAL = timedelta(days=1)
 
 
 AGENTS = {
     "technical": {
         "name": "Technical Analysis",
         "system": (
-            "You are an expert Quantitative Technical Analyst. Focus on price action, volume "
-            "behavior, MFI, OBV, and liquidity zones."
+            "You are an evidence-based energy commodity quantitative analyst. Use only supplied "
+            "OHLCV prices and indicators; never invent market data."
         ),
     },
     "supply": {
@@ -58,127 +74,86 @@ AGENTS = {
     },
 }
 
-class GoogleAIQuotaError(RuntimeError):
-    """Raised when Google AI rejects a request for quota or rate-limit reasons."""
+class MetaModelAPIError(RuntimeError):
+    def __init__(self, status_code: int, detail: str):
+        self.status_code = status_code
+        self.detail = detail
+        super().__init__(detail)
+
+
+class MetaModelQuotaError(RuntimeError):
+    """Raised when Meta Model API rejects a request for quota or rate-limit reasons."""
 
 
 _daily_debate_lock = Lock()
 
 
-def _google_api_key() -> str | None:
-    return os.getenv("GOOGLE_API_KEY")
+def _meta_model_api_key() -> str | None:
+    return os.getenv("META_MODEL_API_KEY") or os.getenv("MODEL_API_KEY")
 
 
 def _model_for_role(role: str) -> str:
     if role not in AGENTS:
         raise ValueError(f"Unknown Strategy Desk agent role: {role}")
-    return GOOGLE_MODEL
+    return os.getenv("META_MODEL_NAME", "meta-models/muse-spark-open-1026")
 
 
-def _google_interaction(
+def _model_candidates(model: str) -> list[str]:
+    return list(dict.fromkeys((model, *META_MODEL_FALLBACKS)))
+
+
+def _meta_model_interaction(
     system: str,
     prompt: str,
     model: str,
     max_tokens: int,
 ) -> str:
-    client: genai.Client | None = None
+    api_key = _meta_model_api_key()
+    if not api_key:
+        raise RuntimeError(
+            "Meta Model API key is missing. Set META_MODEL_API_KEY in the root .env file."
+        )
+
+    base_url = os.getenv("META_MODEL_API_BASE_URL", META_MODEL_API_URL).rstrip("/")
+    response = requests.post(
+        f"{base_url}/responses",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": model,
+            "instructions": system,
+            "input": prompt,
+            "max_output_tokens": max_tokens,
+        },
+        timeout=META_API_TIMEOUT_SECONDS,
+    )
     try:
-        client = genai.Client(
-            api_key=_google_api_key(),
-            http_options={
-                "timeout": GOOGLE_API_TIMEOUT_MS,
-                "retry_options": {"attempts": 1},
-            },
-        )
-        response = client.interactions.create(
-            model=model,
-            input=prompt,
-            system_instruction=system,
-            generation_config={"max_output_tokens": max_tokens},
-            store=False,
-        )
+        payload = response.json()
+    except ValueError:
+        payload = {}
+    if not response.ok:
+        error = payload.get("error") if isinstance(payload, dict) else None
+        detail = error.get("message") if isinstance(error, dict) else error
+        detail = str(detail or response.text or f"HTTP {response.status_code}")
+        detail = detail.replace(api_key, "[redacted]")
+        raise MetaModelAPIError(response.status_code, re.sub(r"\s+", " ", detail)[:350])
+
+    output_text = payload.get("output_text") if isinstance(payload, dict) else None
+    if not output_text and isinstance(payload, dict):
         output_parts = []
-        for continuation_count in range(MAX_INTERACTION_CONTINUATIONS + 1):
-            output_text = str(response.output_text or "")
-            if output_text:
-                output_parts.append(output_text)
-
-            status = getattr(response.status, "value", response.status)
-            if status == "completed":
-                return "".join(output_parts).strip()
-
-            continuation_token = response.continuation_token
-            if status == "incomplete" and not continuation_token:
-                raise RuntimeError(
-                    "Google AI interaction was incomplete and provided no continuation token."
+        for item in payload.get("output", []):
+            if item.get("type") == "message":
+                output_parts.extend(
+                    content.get("text", "")
+                    for content in item.get("content", [])
+                    if content.get("type") == "output_text"
                 )
-            if status != "incomplete":
-                raise RuntimeError(
-                    "Google AI interaction ended without a complete response "
-                    f"(status: {status or 'unknown'})."
-                )
-            if continuation_count == MAX_INTERACTION_CONTINUATIONS:
-                raise RuntimeError(
-                    "Google AI interaction remained incomplete after "
-                    f"{MAX_INTERACTION_CONTINUATIONS} continuation attempts."
-                )
-
-            response = client.interactions.create(
-                model=model,
-                continuation_token=continuation_token,
-                generation_config={"max_output_tokens": max_tokens},
-                store=False,
-            )
-        raise RuntimeError("Google AI interaction ended without a complete response.")
-    finally:
-        if client is not None:
-            client.close()
-
-
-def _provider_status(exc: Exception) -> int | None:
-    status = getattr(exc, "status_code", None) or getattr(exc, "code", None)
-    if status is None:
-        status = getattr(getattr(exc, "response", None), "status_code", None)
-    status = getattr(status, "value", status)
-    try:
-        return int(status) if status is not None else None
-    except (TypeError, ValueError):
-        return None
-
-
-def _is_google_quota_error(exc: Exception) -> bool:
-    error_text = str(exc).lower()
-    return _provider_status(exc) == 429 or any(
-        phrase in error_text
-        for phrase in (
-            "resource exhausted",
-            "resource_exhausted",
-            "quota",
-            "rate limit",
-            "too many requests",
-        )
-    )
-
-
-def _is_daily_google_quota_error(exc: Exception) -> bool:
-    error_text = _provider_error_detail(exc).lower()
-    return _is_google_quota_error(exc) and any(
-        phrase in error_text
-        for phrase in (
-            "per day",
-            "daily limit",
-            "daily quota",
-            "retry in",
-        )
-    )
-
-
-def _provider_error_detail(exc: Exception) -> str:
-    response = getattr(exc, "response", None)
-    body = getattr(response, "text", None)
-    if not body:
-        body = str(exc)
-    return re.sub(r"\s+", " ", str(body)).strip()[:350]
+        output_text = "".join(output_parts)
+    if not isinstance(output_text, str) or not output_text.strip():
+        raise RuntimeError("Meta Model API returned a response without output text.")
+    return output_text.strip()
 
 
 def _invoke(
@@ -187,74 +162,56 @@ def _invoke(
     model: str,
     max_tokens: int = MAX_AGENT_OUTPUT_TOKENS,
 ) -> str:
-    if not _google_api_key():
+    if not _meta_model_api_key():
         raise RuntimeError(
-            "Google AI API key is missing. Set GOOGLE_API_KEY in the root .env file."
+            "Meta Model API key is missing. Set META_MODEL_API_KEY in the root .env file."
         )
 
     last_error: Exception | None = None
-    for attempt in range(MAX_MODEL_ATTEMPTS):
-        try:
-            content = _google_interaction(system, prompt, model, max_tokens)
-            if content:
-                return content
-            last_error = ValueError("Google AI Interactions API returned empty content.")
-        except Exception as exc:
-            status_code = _provider_status(exc)
-            error_text = str(exc).lower()
-            if _is_daily_google_quota_error(exc):
-                raise GoogleAIQuotaError(
-                    "Google AI daily request quota is exhausted; retry after the "
-                    "provider's daily quota reset. "
-                    f"Details: {_provider_error_detail(exc)}"
-                ) from exc
-            is_retryable = (
-                status_code in {408, 429, 500, 502, 503, 504}
-                or (isinstance(status_code, int) and status_code >= 500)
-                or _is_google_quota_error(exc)
-                or isinstance(exc, (TimeoutError, ConnectionError, OSError))
-                or any(
-                    phrase in error_text
-                    for phrase in (
-                        "resource exhausted",
-                        "resource_exhausted",
-                        "quota",
-                        "rate limit",
-                        "interaction was incomplete and provided no continuation token",
-                        "temporarily unavailable",
-                        "service unavailable",
-                        "too many requests",
-                        "empty content",
-                    )
-                )
-            )
-            if not is_retryable:
-                raise RuntimeError(
-                    f"Google AI request failed for {model}"
-                    f"{f' (HTTP {status_code})' if status_code else ''}: "
-                    f"{_provider_error_detail(exc)}"
-                ) from exc
-            last_error = exc
+    models = _model_candidates(model)
+    for model_index, candidate in enumerate(models):
+        model_not_found = False
+        for attempt in range(MAX_MODEL_ATTEMPTS):
+            try:
+                return _meta_model_interaction(system, prompt, candidate, max_tokens)
+            except MetaModelAPIError as exc:
+                last_error = exc
+                message = exc.detail.lower()
+                if (
+                    model_index + 1 < len(models)
+                    and exc.status_code in {400, 404}
+                    and any(token in message for token in ("model", "not_found", "not found", "unsupported"))
+                ):
+                    model_not_found = True
+                    break
+                if exc.status_code == 429:
+                    raise MetaModelQuotaError(
+                        f"Meta Model API quota or rate limit reached: {exc.detail}"
+                    ) from exc
+                if exc.status_code not in {408, 429, 500, 502, 503, 504}:
+                    raise RuntimeError(
+                        f"Meta Model API request failed for {candidate} "
+                        f"(HTTP {exc.status_code}): {exc.detail}"
+                    ) from exc
+            except (TimeoutError, ConnectionError, OSError, requests.Timeout, requests.ConnectionError) as exc:
+                last_error = exc
 
-        if attempt + 1 < MAX_MODEL_ATTEMPTS:
+            if attempt + 1 < MAX_MODEL_ATTEMPTS:
+                time.sleep(MODEL_RETRY_DELAY_SECONDS * (attempt + 1))
+        if model_not_found:
             print(
-                f"[Strategy Desk Warning] Google AI model {model} did not complete "
-                f"({attempt + 1}/{MAX_MODEL_ATTEMPTS}); retrying."
+                f"[Strategy Desk Warning] Meta model {candidate} is unavailable; "
+                "trying configured fallback."
             )
-            time.sleep(MODEL_RETRY_DELAY_SECONDS * (attempt + 1))
+            continue
+        break
 
-    assert last_error is not None
-    status_code = _provider_status(last_error)
-    error_detail = _provider_error_detail(last_error)
-    if _is_google_quota_error(last_error):
-        raise GoogleAIQuotaError(
-            "Google AI API quota or rate limit reached after "
-            f"{MAX_MODEL_ATTEMPTS} attempts. Check the Gemini API quota for your project. "
-            f"Details: {error_detail}"
+    if isinstance(last_error, MetaModelAPIError):
+        raise RuntimeError(
+            f"Meta Model API model {model} failed after retries: {last_error.detail}"
         ) from last_error
     raise RuntimeError(
-        f"Google AI model {model} failed after {MAX_MODEL_ATTEMPTS} attempts: "
-        f"{error_detail}"
+        f"Meta Model API model {model} failed after retries: {last_error}"
     ) from last_error
 
 
@@ -274,6 +231,137 @@ def _fetch_recent_rows(
         .execute()
     )
     return response.data or []
+
+
+def _load_agent_accuracy() -> list[dict[str, Any]]:
+    if not supabase:
+        return []
+    try:
+        return _fetch_recent_rows(
+            "strategy_desk_agent_accuracy",
+            "updated_at",
+            10,
+            "agent_name,evaluated_predictions,correct_predictions,accuracy",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Agent accuracy memory is unavailable. Apply sql/strategy_desk_memory.sql "
+            "in Supabase before running Strategy Desk analysis."
+        ) from exc
+
+
+def _direction_for_change(change_pct: float) -> str:
+    if change_pct > 0.1:
+        return "UP"
+    if change_pct < -0.1:
+        return "DOWN"
+    return "NEUTRAL"
+
+
+def _score_due_predictions(
+    commodity_basket: dict[str, dict[str, Any]],
+    now: datetime | None = None,
+) -> int:
+    if not supabase:
+        return 0
+    current_time = now or datetime.now(timezone.utc)
+    try:
+        rows = _fetch_recent_rows(
+            "strategy_desk_predictions",
+            "evaluation_due_at",
+            1000,
+            "id,symbol,base_price,predicted_direction,agent_predictions,evaluation_due_at,actual_price",
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Strategy Desk prediction history is unavailable. Apply "
+            "sql/strategy_desk_memory.sql in Supabase before running analysis."
+        ) from exc
+
+    scored_count = 0
+    for row in rows:
+        if row.get("actual_price") is not None:
+            continue
+        due_at = row.get("evaluation_due_at")
+        if not due_at:
+            continue
+        due_time = datetime.fromisoformat(str(due_at).replace("Z", "+00:00"))
+        if due_time.tzinfo is None:
+            due_time = due_time.replace(tzinfo=timezone.utc)
+        if due_time > current_time:
+            continue
+
+        observed = commodity_basket.get(row["symbol"], {})
+        if observed.get("status") != "available" or observed.get("price") is None:
+            continue
+        base_price = float(row["base_price"])
+        actual_price = float(observed["price"])
+        change_pct = (actual_price - base_price) / base_price * 100
+        actual_direction = _direction_for_change(change_pct)
+        agent_predictions = row.get("agent_predictions") or {}
+        agent_results = {
+            agent: direction == actual_direction
+            for agent, direction in agent_predictions.items()
+            if direction in {"UP", "DOWN", "NEUTRAL"}
+        }
+        try:
+            (
+                supabase.table("strategy_desk_predictions")
+                .update({
+                    "actual_price": actual_price,
+                    "actual_direction": actual_direction,
+                    "direction_correct": row["predicted_direction"] == actual_direction,
+                    "agent_results": agent_results,
+                    "evaluated_at": current_time.isoformat(),
+                })
+                .eq("id", row["id"])
+                .execute()
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not score Strategy Desk prediction {row['id']}."
+            ) from exc
+        scored_count += 1
+
+    if scored_count:
+        _refresh_agent_accuracy_scores()
+    return scored_count
+
+
+def _refresh_agent_accuracy_scores() -> None:
+    try:
+        rows = _fetch_recent_rows(
+            "strategy_desk_predictions",
+            "created_at",
+            5000,
+            "agent_results",
+        )
+        scores: dict[str, list[int]] = {}
+        for row in rows:
+            for agent, correct in (row.get("agent_results") or {}).items():
+                values = scores.setdefault(agent, [0, 0])
+                values[0] += 1
+                values[1] += int(bool(correct))
+        if scores:
+            updates = [
+                {
+                    "agent_name": agent,
+                    "evaluated_predictions": counts[0],
+                    "correct_predictions": counts[1],
+                    "accuracy": round(counts[1] / counts[0], 4),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+                for agent, counts in scores.items()
+            ]
+            supabase.table("strategy_desk_agent_accuracy").upsert(
+                updates,
+                on_conflict="agent_name",
+            ).execute()
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not refresh Strategy Desk agent accuracy scores. Check "
+            "sql/strategy_desk_memory.sql and Supabase permissions."
+        ) from exc
 
 
 def _gather_telemetry() -> tuple[list[dict[str, Any]], str]:
@@ -376,15 +464,18 @@ def _gather_headlines() -> tuple[list[dict[str, Any]], str]:
             )
             rows = _fetch_recent_rows(table_name, "created_at", 5, columns)
             if rows:
-                return [
-                    {
-                        "title": str(row.get("title", ""))[:220],
+                headlines = []
+                for row in rows[:5]:
+                    title, category = sanitize_energy_news(str(row.get("title", "")))
+                    summary, _ = sanitize_energy_news(str(row.get("summary") or ""))
+                    headlines.append({
+                        "title": title[:220],
+                        "category": category,
                         "source": str(row.get("source", ""))[:50],
-                        "summary": str(row.get("summary") or "")[:240],
+                        "summary": summary[:240],
                         "sentiment": str(row.get("sentiment", ""))[:20],
-                    }
-                    for row in rows[:5]
-                ], table_name
+                    })
+                return headlines, table_name
         except Exception:
             continue
     return [], "unavailable"
@@ -394,10 +485,8 @@ def _gather_market_context() -> dict[str, Any]:
     market_snapshot = get_brent_market_snapshot()
     telemetry, telemetry_source = _gather_telemetry()
     headlines, news_source = _gather_headlines()
-    try:
-        technical_report = get_technical_indicators()
-    except Exception as exc:
-        technical_report = f"Technical indicator retrieval failed: {exc}"
+    commodity_basket = get_commodity_technical_indicators()
+    technical_report = format_commodity_technical_report(commodity_basket)
 
     return {
         "symbol": "BZ=F",
@@ -408,6 +497,7 @@ def _gather_market_context() -> dict[str, Any]:
         "market_is_closed": market_snapshot["market_is_closed"],
         "price_basis": market_snapshot["price_basis"],
         "price_as_of": market_snapshot["price_as_of"],
+        "commodity_basket": commodity_basket,
         "technical_report": technical_report[:700],
         "telemetry": telemetry,
         "telemetry_source": telemetry_source,
@@ -505,6 +595,7 @@ def _summarize_previous_debate(
 def _context_prompt(state: DebateState) -> str:
     context = state["market_context"]
     prior_summary = state.get("previous_debates", [])
+    accuracy_summary = state.get("agent_accuracy", [])
     if context.get("market_is_closed"):
         instruction = (
             "The Brent market is closed for the weekend. The supplied price is the latest "
@@ -527,10 +618,16 @@ def _context_prompt(state: DebateState) -> str:
             "current evidence. Treat prior analysis as a hypothesis, not a fact or an anchor; "
             "do not claim a forecast was correct without evidence."
         )
+    if accuracy_summary:
+        instruction += (
+            " Review the supplied historical accuracy for your agent role. Use it as "
+            "calibrated feedback, not as a substitute for current market evidence."
+        )
     return json.dumps(
         {
             "live_context": context,
             "previous_debate_summary": prior_summary,
+            "agent_accuracy_history": accuracy_summary,
             "instruction": instruction,
         },
         ensure_ascii=False,
@@ -540,70 +637,114 @@ def _context_prompt(state: DebateState) -> str:
 
 def _gather_context_node(state: DebateState) -> dict[str, Any]:
     return {
-        "market_context": _gather_market_context(),
+        "market_context": state.get("market_context") or _gather_market_context(),
         "previous_debates": state.get("previous_debates", []),
+        "agent_accuracy": state.get("agent_accuracy", []),
     }
+
+
+def _parse_agent_turn(response: str) -> dict[str, Any]:
+    candidate = response.strip()
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1)
+    try:
+        result = json.loads(candidate)
+    except json.JSONDecodeError as exc:
+        raise ValueError("Strategy Desk agent response was not valid JSON.") from exc
+    if not isinstance(result, dict) or not str(result.get("analysis", "")).strip():
+        raise ValueError("Strategy Desk agent response must include non-empty analysis.")
+    direction = str(result.get("direction", "")).upper()
+    if direction not in {"UP", "DOWN", "NEUTRAL"}:
+        raise ValueError("Strategy Desk agent direction must be UP, DOWN, or NEUTRAL.")
+    confidence = int(result.get("confidence", -1))
+    if not 0 <= confidence <= 100:
+        raise ValueError("Strategy Desk agent confidence must be from 0 to 100.")
+    return {
+        "analysis": str(result["analysis"]).strip(),
+        "direction": direction,
+        "confidence": confidence,
+    }
+
+
+_AGENT_RESPONSE_FORMAT = (
+    "Return ONLY one JSON object with this exact schema: "
+    '{"analysis":"concise evidence-based reasoning","direction":"UP|DOWN|NEUTRAL",'
+    '"confidence":0}. Direction is the expected one-day Brent price direction; use NEUTRAL '
+    "when supplied evidence is balanced or insufficient. Confidence must be an integer 0-100. "
+    "Do not include markdown fences."
+)
 
 
 def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
     agent = AGENTS[role]
     role_instructions = {
         "technical": (
-            "Provide a concise, evidence-based technical analysis in plain text, using short "
-            "labeled lines without Markdown headings, bullets, emphasis markers, or separators. "
-            "Use live_context.price and live_context.daily_change_pct for the live quote and "
-            "daily change, preserving the daily change to two decimal places; distinguish that "
-            "quote from the daily-history indicators in "
-            "technical_report. Discuss the supplied moving averages, RSI, OBV, and liquidity "
-            "range. State that MACD, MFI, or volume details are unavailable if not supplied. "
-            "Do not invent values or imply a direction for a zero/near-zero daily change. "
-            "Finish a complete analysis with the overall technical bias."
+            "Assess Brent and the full supplied commodity basket. Compare prices and RSI (14), "
+            "MACD (12,26,9), ATR (14), EMA (20/50/200), Bollinger bands, stochastic and VWAP "
+            "where available. Identify unavailable indicators rather than inventing values."
         ),
         "supply": (
-            "Build an evidence-led oil-market supply thesis using the supplied macroeconomic, "
-            "maritime route density, bottleneck, news, supply, and demand data. Discuss transit "
-            "conditions at Hormuz and Bab-el-Mandeb and OPEC+ only where supported by the "
-            "supplied context. Connect the evidence to the technical analysis; do not invent facts."
+            "Build an evidence-led supply thesis using commodity indicators, commercial shipping "
+            "route density, bottleneck telemetry, inventories, trade volumes, and supply data. "
+            "Mention only factors present in the supplied context."
         ),
         "demand": (
-            "Build an evidence-led oil-market demand thesis using the supplied macroeconomic, "
-            "maritime route density, bottleneck, news, supply, and demand data. Discuss demand "
-            "conditions and alternative interpretations only where supported by the supplied "
-            "context. Connect the evidence to the technical analysis; do not invent facts."
+            "Build an evidence-led demand thesis using commodity indicators, macroeconomic "
+            "conditions, inventories, trade volumes, and consumption data. Mention only factors "
+            "present in the supplied context."
         ),
     }[role]
-    prompt = _context_prompt(state)
-    if role == "supply":
-        prompt += (
-            f"\n\nTECHNICAL ANALYSIS:\n{state['initial_technical']}\n\n"
-            "Use the technical evidence along with market context in your supply-side thesis."
-        )
-    report = _invoke(
-        agent["system"],
-        f"{prompt}\n\n{role_instructions}",
-        _model_for_role(role),
+    prompt = (
+        f"{_context_prompt(state)}\n\n"
+        f"TECHNICAL ANALYSIS:\n{state.get('initial_technical', '')}\n\n"
+        f"SUPPLY THESIS:\n{state.get('initial_supply_thesis', '')}\n\n"
+        f"DEMAND THESIS:\n{state.get('initial_demand_thesis', '')}\n\n"
+        f"{role_instructions}\n{_AGENT_RESPONSE_FORMAT}"
+    )
+    turn = _parse_agent_turn(
+        _invoke(agent["system"], prompt, _model_for_role(role))
     )
     state_keys = {
-        "technical": "initial_technical",
-        "supply": "initial_supply_thesis",
-        "demand": "initial_demand_thesis",
+        "technical": ("initial_technical", "technical_direction"),
+        "supply": ("initial_supply_thesis", "supply_direction"),
+        "demand": ("initial_demand_thesis", "demand_direction"),
     }
-    return {state_keys[role]: report}
+    text_key, direction_key = state_keys[role]
+    return {text_key: turn["analysis"], direction_key: turn["direction"]}
 
 
-def _demand_thesis(state: DebateState) -> dict[str, Any]:
-    agent = AGENTS["demand"]
+def _thesis_rebuttal(role: str, loop: int, state: DebateState) -> dict[str, Any]:
+    if role not in {"supply", "demand"} or loop not in {1, 2}:
+        raise ValueError("Rebuttal role and loop must be supply/demand and 1/2.")
+    if role == "supply":
+        prior_key = "initial_demand_thesis" if loop == 1 else "demand_rebuttal_1"
+        output_key = f"supply_rebuttal_{loop}"
+        instruction = (
+            "Rebut the demand thesis with specific evidence about supply, commodity "
+            "relationships, shipping routes, inventories, and bottlenecks. Correct any earlier "
+            "claim that current evidence does not support."
+        )
+    else:
+        prior_key = "supply_rebuttal_1" if loop == 1 else "supply_rebuttal_2"
+        output_key = f"demand_rebuttal_{loop}"
+        instruction = (
+            "Rebut the supply thesis with evidence about demand, prices, inventories, and "
+            "macroeconomic conditions. Correct any earlier claim that current evidence does "
+            "not support."
+        )
     prompt = (
         f"{_context_prompt(state)}\n\n"
         f"TECHNICAL ANALYSIS:\n{state['initial_technical']}\n\n"
-        f"SUPPLY THESIS:\n{state['initial_supply_thesis']}\n\n"
-        "Give a substantive, evidence-led demand thesis that tests the supply thesis. Assess "
-        "macroeconomic conditions, maritime route density and bottlenecks, OPEC+ supply, demand, "
-        "and relevant market catalysts only where supported by supplied evidence. Connect the "
-        "evidence to technical price action. Do not invent facts."
+        f"PREVIOUS OPPOSING THESIS:\n{state[prior_key]}\n\n"
+        f"Your prior analysis:\n{state['initial_supply_thesis'] if role == 'supply' else state['initial_demand_thesis']}\n\n"
+        f"REBUTTAL LOOP {loop}: {instruction}\n{_AGENT_RESPONSE_FORMAT}"
     )
-    report = _invoke(agent["system"], prompt, _model_for_role("demand"))
-    return {"initial_demand_thesis": report}
+    turn = _parse_agent_turn(
+        _invoke(AGENTS[role]["system"], prompt, _model_for_role(role))
+    )
+    direction_key = "supply_direction" if role == "supply" else "demand_direction"
+    return {output_key: turn["analysis"], direction_key: turn["direction"]}
 
 
 def _parse_verdict(response: str) -> dict[str, Any]:
@@ -671,7 +812,7 @@ def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
     context = state["market_context"]
     prompt = (
         f"{_context_prompt(state)}\n\n"
-        f"DESK ANALYSES:\n{json.dumps({key: state[key] for key in ('initial_technical', 'initial_supply_thesis', 'initial_demand_thesis')}, ensure_ascii=False)}\n\n"
+        f"DESK ANALYSES:\n{json.dumps({key: state[key] for key in ('initial_technical', 'initial_supply_thesis', 'initial_demand_thesis', 'supply_rebuttal_1', 'demand_rebuttal_1', 'supply_rebuttal_2', 'demand_rebuttal_2')}, ensure_ascii=False)}\n\n"
         "Deliver a risk-managed synthesis for the current Brent price. Reconcile the technical "
         "analysis with the supply and demand theses. Compare the prior synthesis and all "
         "three prior agent analyses with current evidence; say what changed and avoid treating "
@@ -728,55 +869,176 @@ def compile_trading_graph():
     workflow.add_node("gather_context", _gather_context_node)
     workflow.add_node("technical_analysis", lambda state: _initial_analysis("technical", state))
     workflow.add_node("supply_thesis", lambda state: _initial_analysis("supply", state))
-    workflow.add_node("demand_thesis", _demand_thesis)
+    workflow.add_node("demand_thesis", lambda state: _initial_analysis("demand", state))
+    workflow.add_node("supply_rebuttal_1", lambda state: _thesis_rebuttal("supply", 1, state))
+    workflow.add_node("demand_rebuttal_1", lambda state: _thesis_rebuttal("demand", 1, state))
+    workflow.add_node("supply_rebuttal_2", lambda state: _thesis_rebuttal("supply", 2, state))
+    workflow.add_node("demand_rebuttal_2", lambda state: _thesis_rebuttal("demand", 2, state))
     workflow.add_node("desk_signal_synthesis", _desk_signal_synthesis)
     workflow.set_entry_point("gather_context")
     workflow.add_edge("gather_context", "technical_analysis")
     workflow.add_edge("technical_analysis", "supply_thesis")
     workflow.add_edge("supply_thesis", "demand_thesis")
-    workflow.add_edge("demand_thesis", "desk_signal_synthesis")
+    workflow.add_edge("demand_thesis", "supply_rebuttal_1")
+    workflow.add_edge("supply_rebuttal_1", "demand_rebuttal_1")
+    workflow.add_edge("demand_rebuttal_1", "supply_rebuttal_2")
+    workflow.add_edge("supply_rebuttal_2", "demand_rebuttal_2")
+    workflow.add_edge("demand_rebuttal_2", "desk_signal_synthesis")
     workflow.add_edge("desk_signal_synthesis", END)
     return workflow.compile()
 
 
 def _transcript_for_state(state: dict[str, Any]) -> list[dict[str, str]]:
-    phases = {
-        "technical": "initial-analysis",
-        "supply": "initial-analysis",
-        "demand": "bearish-rebuttal",
-    }
-    client_roles = {
-        "technical": "technical",
-        "supply": "bullish",
-        "demand": "bearish",
-    }
-    state_keys = {
-        "technical": "initial_technical",
-        "supply": "initial_supply_thesis",
-        "demand": "initial_demand_thesis",
-    }
-    opening_messages = [
+    turns = (
+        ("technical", "initial-analysis", "initial_technical"),
+        ("supply", "supply-thesis", "initial_supply_thesis"),
+        ("demand", "demand-thesis", "initial_demand_thesis"),
+        ("supply", "supply-rebuttal-1", "supply_rebuttal_1"),
+        ("demand", "demand-rebuttal-1", "demand_rebuttal_1"),
+        ("supply", "supply-rebuttal-2", "supply_rebuttal_2"),
+        ("demand", "demand-rebuttal-2", "demand_rebuttal_2"),
+    )
+    client_roles = {"technical": "technical", "supply": "bullish", "demand": "bearish"}
+    return [
         {
-            "phase": phases[role],
+            "phase": phase,
             "agent": AGENTS[role]["name"],
             "role": client_roles[role],
-            "message": state[state_keys[role]],
+            "message": state[state_key],
         }
-        for role in ("technical", "supply", "demand")
+        for role, phase, state_key in turns
     ]
-    return opening_messages
+
+
+def _record_prediction(
+    analysis_id: str,
+    context: dict[str, Any],
+    verdict: dict[str, Any],
+    agent_directions: dict[str, str],
+) -> None:
+    basket = context.get("commodity_basket", {})
+    brent_telemetry = basket.get("BZ=F", {})
+    base_price = brent_telemetry.get("price") or context["price"]
+    direction = {"BUY": "UP", "SELL": "DOWN", "HOLD": "NEUTRAL"}[verdict["signal"]]
+    payload = {
+        "analysis_id": analysis_id,
+        "symbol": "BZ=F",
+        "base_price": float(base_price),
+        "predicted_direction": direction,
+        "agent_predictions": agent_directions,
+        "evaluation_due_at": (
+            datetime.now(timezone.utc) + timedelta(days=1)
+        ).isoformat(),
+    }
+    try:
+        supabase.table("strategy_desk_predictions").insert(payload).execute()
+    except Exception as exc:
+        raise RuntimeError(
+            "Could not save Strategy Desk forecast memory. Apply "
+            "sql/strategy_desk_memory.sql in Supabase."
+        ) from exc
+
+
+def _format_strategy_desk_payload(analysis: dict[str, Any]) -> dict[str, Any]:
+    context = analysis.get("market_context") or {}
+    verdict = analysis.get("verdict") or {}
+    basket = context.get("commodity_basket") or {}
+    brent_price = {
+        "symbol": context.get("symbol", "BZ=F"),
+        "price": context.get("price"),
+        "daily_change_pct": context.get("daily_change_pct"),
+        "price_basis": context.get("price_basis"),
+        "price_as_of": context.get("price_as_of"),
+        "indicators": (basket.get("BZ=F") or {}).get("indicators", {}),
+    }
+    basket_summary = [
+        {
+            "symbol": symbol,
+            "name": item.get("name"),
+            "status": item.get("status"),
+            "price": item.get("price"),
+            "price_basis": item.get("price_basis"),
+            "price_as_of": item.get("price_as_of"),
+            "indicators": item.get("indicators", {}),
+            **({"error": item["error"]} if item.get("error") else {}),
+        }
+        for symbol, item in basket.items()
+    ]
+    headline = (context.get("headlines") or [{}])[0]
+    action = {
+        "signal": verdict.get("signal"),
+        "conviction_pct": verdict.get("conviction"),
+        "support": verdict.get("support"),
+        "resistance": verdict.get("resistance"),
+        "rationale": verdict.get("rationale"),
+    }
+    basket_prices = [
+        f"{item['name']} ${item['price']:.2f}"
+        for item in basket_summary
+        if item.get("status") == "available" and item.get("price") is not None
+    ]
+    broadcast_summary = "\n\n".join((
+        (
+            f"Brent crude ({brent_price['symbol']}) is ${float(context['price']):.2f}, "
+            f"{float(context.get('daily_change_pct') or 0):+.2f}% on the session. "
+            f"This is a {context.get('price_basis', 'reported')} quote as of "
+            f"{context.get('price_as_of') or 'the latest available update'}."
+        ),
+        (
+            "The correlated energy basket reports "
+            f"{'; '.join(basket_prices) if basket_prices else 'no current prices available'}. "
+            "Technical indicators are calculated from daily OHLCV history; unavailable "
+            "values are explicitly omitted."
+        ),
+        (
+            f"Desk signal: {action['signal'] or 'unavailable'} at "
+            f"{action['conviction_pct'] if action['conviction_pct'] is not None else 'unavailable'}% "
+            f"conviction. {action['rationale'] or 'The desk has no saved rationale.'} "
+            "Market data and analysis are informational and not investment advice."
+        ),
+    ))
+    return {
+        **analysis,
+        "broadcast_summary": broadcast_summary,
+        "brent_price": brent_price,
+        "commodity_basket_summary": basket_summary,
+        "desk_action": action,
+        "top_headline": {
+            "headline": headline.get("title") or "No sanitized energy-market headline available.",
+            "category": headline.get("category") or "energy_markets",
+        },
+        "youtube_tags": [
+            "Energy Markets",
+            "Brent Crude",
+            "Commodity Analysis",
+            "Maritime Supply Chains",
+            "Global Energy",
+        ],
+    }
 
 
 def run_agent_pipeline() -> dict[str, Any]:
     if not supabase:
         raise RuntimeError("Supabase must be configured to save Strategy Desk analysis history.")
 
+    market_context = _gather_market_context()
+    _score_due_predictions(market_context.get("commodity_basket", {}))
+    agent_accuracy = _load_agent_accuracy()
     previous_debates = _summarize_previous_debate(_load_previous_debates())
     initial_state: DebateState = {
+        "market_context": market_context,
         "previous_debates": previous_debates,
+        "agent_accuracy": agent_accuracy,
         "initial_technical": "",
         "initial_supply_thesis": "",
         "initial_demand_thesis": "",
+        "supply_rebuttal_1": "",
+        "demand_rebuttal_1": "",
+        "supply_rebuttal_2": "",
+        "demand_rebuttal_2": "",
+        "technical_direction": "NEUTRAL",
+        "supply_direction": "NEUTRAL",
+        "demand_direction": "NEUTRAL",
         "verdict": {},
     }
     final_state = compile_trading_graph().invoke(initial_state)
@@ -797,11 +1059,24 @@ def run_agent_pipeline() -> dict[str, Any]:
     }
     result = supabase.table("war_room_debates").insert(row).execute()
     saved = (result.data or [{}])[0]
-    return {
+    result_payload = {
         "id": saved.get("id"),
         "created_at": saved.get("created_at") or datetime.now(timezone.utc).isoformat(),
         **row,
     }
+    if result_payload["id"] is None:
+        raise RuntimeError("Supabase did not return an ID for the saved Strategy Desk analysis.")
+    _record_prediction(
+        str(result_payload["id"]),
+        context,
+        verdict,
+        {
+            "technical": final_state["technical_direction"],
+            "supply": final_state["supply_direction"],
+            "demand": final_state["demand_direction"],
+        },
+    )
+    return _format_strategy_desk_payload(result_payload)
 
 
 def _debate_created_at(debate: dict[str, Any]) -> datetime | None:
@@ -822,14 +1097,14 @@ def _debate_created_at(debate: dict[str, Any]) -> datetime | None:
 
 
 def run_debate_if_due() -> dict[str, Any]:
-    """Reuse the latest debate for 12 hours; otherwise generate and persist a fresh one."""
+    """Reuse today's latest analysis; otherwise generate and persist a fresh one."""
     with _daily_debate_lock:
         now = datetime.now(timezone.utc)
         recent = get_recent_debates(limit=1)
         if recent:
             created_at = _debate_created_at(recent[0])
             if created_at and now - created_at < DEBATE_REFRESH_INTERVAL:
-                return recent[0]
+                return _format_strategy_desk_payload(recent[0])
         return run_agent_pipeline()
 
 
@@ -837,7 +1112,10 @@ def get_recent_debates(limit: int = 10) -> list[dict[str, Any]]:
     if not supabase:
         raise RuntimeError("Supabase must be configured to load Strategy Desk analysis history.")
     try:
-        return _fetch_recent_rows("war_room_debates", "created_at", limit)
+        return [
+            _format_strategy_desk_payload(row)
+            for row in _fetch_recent_rows("war_room_debates", "created_at", limit)
+        ]
     except Exception as exc:
         raise RuntimeError(
             "Strategy Desk history is unavailable. Run the provided war_room_debates SQL in Supabase. "

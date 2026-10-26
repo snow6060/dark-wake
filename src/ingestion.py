@@ -4,6 +4,8 @@ import urllib.request
 import feedparser
 import requests
 from sqlalchemy import and_
+import re
+from html import unescape
 
 from src.database import ChokepointRecord, SessionLocal, init_db
 from src.supabase_client import supabase
@@ -11,7 +13,7 @@ from src.supabase_client import supabase
 RSS_HEADLINE_LIMIT = 50
 RSS_HEADLINE_PRUNE_BATCH_SIZE = 1000
 
-# Targeted energy-market RSS feeds.
+# Targeted commercial energy-market RSS feeds.
 RSS_FEEDS = [
     {"name": "OilPrice Energy News", "url": "https://oilprice.com/rss/main"},
     {"name": "CNBC Energy", "url": "https://www.cnbc.com/id/19836768/device/rss/rss.html"},
@@ -28,13 +30,57 @@ RSS_FEEDS = [
         ),
     },
     {
-        "name": "Google News: Energy Geopolitics",
+        "name": "Google News: Energy Supply and Demand",
         "url": (
-            "https://news.google.com/rss/search?q=(oil+OR+energy)"
-            "+(war+OR+sanctions+OR+Hormuz+OR+OPEC)&hl=en-US&gl=US&ceid=US:en"
+            "https://news.google.com/rss/search?q=energy+supply+OR+oil+inventory"
+            "+OR+shipping+routes+OR+fuel+demand&hl=en-US&gl=US&ceid=US:en"
         ),
     },
 ]
+
+_SENSITIVE_NEWS_PATTERN = re.compile(
+    r"\b(?:war|wars|conflict|conflicts|geopolitic\w*|military|armed forces|"
+    r"army|navy|naval|attack\w*|strike\w*|invasion\w*|battle\w*|"
+    r"ceasefire|sanction\w*|blockade\w*|missile\w*|drone\w*|"
+    r"terror\w*|bomb\w*|politic\w*|government|election\w*|president|"
+    r"diplomat\w*|protest\w*|troop\w*|border\w*|middle east|iran|iraq|"
+    r"israel|gaza|lebanon|syria|yemen|russia|ukraine|taiwan|china|"
+    r"saudi arabia|houthi\w*)\b",
+    re.IGNORECASE,
+)
+_NEWS_CATEGORIES = (
+    ("inventories", re.compile(r"\b(inventor\w*|stockpile\w*|storage)\b", re.I)),
+    ("shipping_routes", re.compile(r"\b(ship\w*|tanker\w*|transit\w*|route\w*|port\w*)\b", re.I)),
+    ("trade_volumes", re.compile(r"\b(trade|export\w*|import\w*|volume\w*)\b", re.I)),
+    ("demand", re.compile(r"\b(demand|consumption|usage)\b", re.I)),
+    ("supply", re.compile(r"\b(supply|production|output|refiner\w*)\b", re.I)),
+    ("energy_prices", re.compile(r"\b(price\w*|cost\w*|crude|oil|gas|fuel|energy)\b", re.I)),
+)
+
+
+def sanitize_energy_news(text: str) -> tuple[str, str]:
+    """Return a commercial energy-market headline/summary and a category."""
+    plain_text = re.sub(r"<[^>]*>", " ", unescape(str(text or "")))
+    plain_text = re.sub(r"\s+", " ", plain_text).strip()
+    category = next(
+        (name for name, pattern in _NEWS_CATEGORIES if pattern.search(plain_text)),
+        "energy_markets",
+    )
+    if _SENSITIVE_NEWS_PATTERN.search(plain_text):
+        labels = {
+            "inventories": "inventory",
+            "shipping_routes": "shipping route",
+            "trade_volumes": "trade volume",
+            "demand": "demand",
+            "supply": "supply",
+            "energy_prices": "energy price",
+            "energy_markets": "market",
+        }
+        return (
+            f"Energy {labels[category]} update: commercial market conditions under review.",
+            category,
+        )
+    return plain_text[:500], category
 
 PORTWATCH_QUERY_URL = (
     "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services/"
@@ -243,8 +289,8 @@ def analyze_sentiment(title: str) -> str:
     into Bullish, Bearish, or Neutral.
     """
     text = title.lower()
-    bullish_keywords = ["surge", "jump", "tension", "conflict", "cut", "shortage", "disruption", "attack", "sanctions", "output drop", "opec+", "war"]
-    bearish_keywords = ["surplus", "glut", "fall", "drop", "decline", "peace", "agreement", "output rise", "recession"]
+    bullish_keywords = ["surge", "jump", "shortage", "disruption", "output drop", "opec+", "inventory draw", "demand growth"]
+    bearish_keywords = ["surplus", "glut", "fall", "drop", "decline", "output rise", "recession", "inventory build", "demand decline"]
 
     score = sum(1 for kw in bullish_keywords if kw in text) - sum(1 for kw in bearish_keywords if kw in text)
 
@@ -346,9 +392,11 @@ def fetch_and_store_rss_headlines():
                     summary = entry.get("summary") or entry.get("description") or ""
                     if not summary and entry.get("content"):
                         summary = entry["content"][0].get("value", "")
+                    sanitized_title, _ = sanitize_energy_news(title)
+                    sanitized_summary, _ = sanitize_energy_news(summary)
 
                     payload = {
-                        "title": title,
+                        "title": sanitized_title,
                         "source": feed_info["name"],
                         "link": link,
                         "sentiment": sentiment,
@@ -356,7 +404,7 @@ def fetch_and_store_rss_headlines():
                         "created_at": _rss_entry_created_at(entry),
                     }
                     if supports_summary:
-                        payload["summary"] = summary
+                        payload["summary"] = sanitized_summary
                     try:
                         supabase.table("rss_news").insert(payload).execute()
                     except Exception as db_err:

@@ -7,6 +7,7 @@ from src.ingestion import (
     _fetch_rss_feed,
     _prune_rss_headlines,
     _rss_entry_created_at,
+    sanitize_energy_news,
 )
 
 
@@ -68,6 +69,37 @@ class RssFeedFetchTests(unittest.TestCase):
             _rss_entry_created_at(entry),
             "2026-10-22T08:00:00+00:00",
         )
+
+    def test_sanitizer_reframes_conflict_headline_as_commercial_energy_update(self):
+        headline, category = sanitize_energy_news(
+            "War conflict threatens tanker shipping routes and crude supply"
+        )
+
+        self.assertEqual(category, "shipping_routes")
+        self.assertEqual(
+            headline,
+            "Energy shipping route update: commercial market conditions under review.",
+        )
+        self.assertNotRegex(
+            headline.lower(),
+            r"\b(war|conflict|threatens|tanker|crude)\b",
+        )
+
+    def test_sanitizer_preserves_non_sensitive_commercial_energy_headlines(self):
+        headline, category = sanitize_energy_news(
+            "Oil inventories rise as refinery demand softens"
+        )
+
+        self.assertEqual(headline, "Oil inventories rise as refinery demand softens")
+        self.assertEqual(category, "inventories")
+
+    def test_sanitizer_reframes_geographic_conflict_reference(self):
+        headline, category = sanitize_energy_news(
+            "Middle East tensions raise crude shipping costs"
+        )
+
+        self.assertEqual(category, "shipping_routes")
+        self.assertNotRegex(headline.lower(), r"\b(middle east|tensions|crude)\b")
 
     def test_news_endpoint_requests_newest_rows_before_limiting(self):
         import main

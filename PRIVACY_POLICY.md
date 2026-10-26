@@ -17,12 +17,12 @@ associated hosted services (together, "Dark Wake").
 - Dark Wake does not require an account and does not ask you to provide your
   name, email address, or other profile information.
 - The app sends requests to our hosted API to display market prices, news,
-  chokepoint data, and saved War Room analyses.
+  maritime-route data, and saved Strategy Desk analyses.
 - Our hosting and infrastructure providers may process technical request
   information, such as your IP address and request time, to deliver and secure
   the service.
-- The War Room sends market and public-source context to Google's Gemini API to
-  generate its analysis. Dark Wake does not submit user-authored prompts because
+- The Strategy Desk sends market and public-source context to the Meta Model API
+  to generate its analysis. Dark Wake does not submit user-authored prompts because
   the app has no prompt-entry feature.
 - Dark Wake does not include advertising, behavioral ad tracking, or a
   third-party analytics SDK.
@@ -44,7 +44,7 @@ When the app connects to the hosted API, the hosting provider and backend may
 process technical information needed to handle and troubleshoot the request.
 This can include an IP address, request date and time, requested API path and
 method, and error or service diagnostic details. The app makes periodic requests
-for current data while it is open; opening the War Room requests saved debate
+for current data while it is open; opening the Strategy Desk requests saved analysis
 history.
 
 The exact logs and retention periods depend on the hosting and infrastructure
@@ -61,16 +61,18 @@ timestamps, to operate the app. These records are about markets, news, and
 shipping activity; they are not collected from your device as personal
 information.
 
-### War Room analysis data
+### Strategy Desk analysis data
 
-When a War Room analysis is generated, the backend sends Google Gemini market
-context and related public-source information so it can produce the debate.
-This context can include a market price and technical indicators, public
-headlines, aggregate chokepoint telemetry, and a summary of the previous saved
-debate. The resulting analysis and debate transcript are saved in the
-configured database so they can be shown to app users.
+When a Strategy Desk analysis is generated, the backend sends Meta Model API
+market context and related public-source information so it can produce the
+analysis. This context can include prices and technical indicators for energy
+commodities, public headlines, aggregate maritime telemetry, and a summary of
+the previous saved analysis. The resulting analysis and transcript are saved
+in the configured database so they can be shown to app users. Forecast
+directions and outcomes may also be stored for aggregate agent-accuracy
+calculations.
 
-The War Room does not receive a user-entered prompt or account identity from the
+The Strategy Desk does not receive a user-entered prompt or account identity from the
 app. Do not treat model output as private or confidential; it is saved as shared
 application content and may be returned to all users of the service.
 
@@ -78,7 +80,7 @@ application content and may be returned to all users of the service.
 
 We and our service providers use the information described above to:
 
-- Deliver the app's prices, news, maritime telemetry, and War Room features.
+- Deliver the app's prices, news, maritime telemetry, and Strategy Desk features.
 - Retrieve and store public-source data and generated debate results.
 - Keep the API available, prevent abuse, diagnose errors, and maintain
   security.
@@ -95,10 +97,10 @@ and current deployment, these may include:
 
 - **Render** — hosts the backend API and may process connection and service-log
   information.
-- **Supabase** — stores configured application records, such as news and saved
-  War Room analyses.
-- **Google Gemini API** — processes the market and public-source context
-  submitted by the backend to generate War Room analysis.
+- **Supabase** — stores configured application records, such as news, saved
+  Strategy Desk analyses, and forecast-accuracy records.
+- **Meta Model API** — processes the market and public-source context
+  submitted by the backend to generate Strategy Desk analysis.
 - **Yahoo Finance** — provides market data to the backend.
 - **TankerMap**, **Straits.live**, and **IMF PortWatch** — provide public
   maritime or chokepoint information to the backend.

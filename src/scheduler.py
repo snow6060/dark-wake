@@ -33,14 +33,14 @@ def start_scheduler():
     )
     # Run RSS headline scraping every 60 seconds
     scheduler.add_job(fetch_and_store_rss_headlines, 'interval', seconds=60, id='rss_fetch_job', replace_existing=True)
-    # Refresh Strategy Desk analysis every 12 hours at 09:00 and 21:00 London time.
+    # Refresh the Strategy Desk once daily one hour before the London market open.
     scheduler.add_job(
         run_debate_if_due,
         'cron',
-        hour='9,21',
+        hour=8,
         minute=0,
         timezone='Europe/London',
-        id='war_room_debate_refresh',
+        id='strategy_desk_daily_analysis',
         replace_existing=True,
         max_instances=1,
         coalesce=True,
