@@ -20,15 +20,21 @@ const formatLondonDateTime = value => {
   }).format(date);
 };
 
+const formatDeskAgentName = name => ({
+  'Bull Case': 'Supply Thesis',
+  'Bear Case': 'Demand Thesis',
+  'Risk Manager': 'Desk Signal & Risk Synthesis',
+}[name] || name);
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('news');
   const [brentData, setBrentData] = useState({ price: '100.95', change_pct: '-0.61' });
   const [articles, setArticles] = useState([]);
   const [showAllModal, setShowAllModal] = useState(false);
-  const [warRoomDebates, setWarRoomDebates] = useState([]);
-  const [activeDebate, setActiveDebate] = useState(null);
-  const [warRoomLoading, setWarRoomLoading] = useState(false);
-  const [warRoomError, setWarRoomError] = useState('');
+  const [strategyDeskAnalyses, setStrategyDeskAnalyses] = useState([]);
+  const [activeAnalysis, setActiveAnalysis] = useState(null);
+  const [strategyDeskLoading, setStrategyDeskLoading] = useState(false);
+  const [strategyDeskError, setStrategyDeskError] = useState('');
 
   // Chokepoint telemetry data state
   const [chokepointRecords, setChokepointRecords] = useState([]);
@@ -46,8 +52,8 @@ export default function App() {
   ]);
 
   const defaultArticles = [
-    { id: 1, title: 'OPEC+ Signals Potential Output Adjustments Amid Middle East Supply Concerns', source: 'Reuters Energy', time_ago: '12m ago', sentiment: 'Bullish' },
-    { id: 2, title: 'Strait of Hormuz Tanker Traffic Stable Despite Increased Naval Patrols', source: 'Lloyd’s List', time_ago: '45m ago', sentiment: 'Neutral' },
+    { id: 1, title: 'OPEC+ Signals Potential Output Adjustments as Brent Prices Shift', source: 'Reuters Energy', time_ago: '12m ago', sentiment: 'Bullish' },
+    { id: 2, title: 'Tanker Traffic Holds Steady Across Key Maritime Routes', source: 'Lloyd’s List', time_ago: '45m ago', sentiment: 'Neutral' },
   ];
 
   useEffect(() => {
@@ -100,34 +106,34 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'warroom') return;
+    if (activeTab !== 'strategy-desk') return;
     let cancelled = false;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
 
-    setWarRoomLoading(true);
-    setWarRoomError('');
-    fetch(`${API_BASE_URL}/api/war-room/debates`, { signal: controller.signal })
+    setStrategyDeskLoading(true);
+    setStrategyDeskError('');
+    fetch(`${API_BASE_URL}/api/strategy-desk/debates`, { signal: controller.signal })
       .then(async response => {
         const data = await response.json();
-        if (!response.ok) throw new Error(data.detail || 'Could not load debate history.');
+        if (!response.ok) throw new Error(data.detail || 'Could not load Strategy Desk history.');
         return data;
       })
       .then(data => {
         if (cancelled) return;
-        setWarRoomDebates(Array.isArray(data) ? data : []);
-        setActiveDebate(data?.[0] || null);
-        setWarRoomError('');
+        setStrategyDeskAnalyses(Array.isArray(data) ? data : []);
+        setActiveAnalysis(data?.[0] || null);
+        setStrategyDeskError('');
       })
       .catch(error => {
         if (cancelled) return;
-        setWarRoomError(error.name === 'AbortError'
-          ? 'Loading saved debate history timed out. Check the backend connection and try again.'
-          : error.message || 'War Room API is unavailable.');
+        setStrategyDeskError(error.name === 'AbortError'
+          ? 'Loading saved Strategy Desk analyses timed out. Check the backend connection and try again.'
+          : error.message || 'Strategy Desk API is unavailable.');
       })
       .finally(() => {
         clearTimeout(timeout);
-        if (!cancelled) setWarRoomLoading(false);
+        if (!cancelled) setStrategyDeskLoading(false);
       });
 
     return () => {
@@ -212,7 +218,7 @@ export default function App() {
         <nav className="nav-tabs">
           {[
             { id: 'news', label: 'News & Price' },
-            { id: 'warroom', label: 'Multi-Agent War Room' },
+            { id: 'strategy-desk', label: 'Energy Strategy Desk' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -328,7 +334,7 @@ export default function App() {
               {/* News Feed Panel */}
               <div className="news-panel">
                 <div className="panel-header-flex">
-                  <h3 className="panel-title">Live Geopolitical RSS Intel</h3>
+                  <h3 className="panel-title">Energy Market & Supply Chain News</h3>
                   <button onClick={() => setShowAllModal(true)} className="view-all-btn">
                     View All ({articles.length})
                   </button>
@@ -358,7 +364,7 @@ export default function App() {
             <div className="chokepoint-section">
               <div className="panel-header-flex">
                 <div>
-                  <h3 className="panel-title">Chokepoint Traffic Telemetry</h3>
+                  <h3 className="panel-title">Maritime Route Density & Bottleneck Analytics</h3>
                   <span className="chart-subtext">
                     {chartSource === 'TankerMap'
                       ? `Daily AIS tanker transits · TankerMap data through ${sortedCPData.at(-1)?.date || 'unavailable'}${portwatchDataAsOf ? ` · IMF PortWatch oil-flow data is separate (latest ${portwatchDataAsOf})` : ''}`
@@ -447,29 +453,29 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'warroom' && (
+        {activeTab === 'strategy-desk' && (
           <section className="war-room">
             <div className="war-room-header">
               <div>
-                <div className="war-room-eyebrow"><span className="war-room-live-dot" /> DARK WAKE / INTELLIGENCE DESK</div>
-                <h2>Brent crude <span>command room</span></h2>
-                <p>Multi-agent adversarial analysis · Instrument <b>brentCash / BZ=F</b></p>
+                <div className="war-room-eyebrow"><span className="war-room-live-dot" /> DARK WAKE / ENERGY INTELLIGENCE</div>
+                <h2>Brent crude <span>Strategy Desk</span></h2>
+                <p>Multi-agent market analysis · Instrument <b>Brent / BZ=F</b></p>
               </div>
               <div className="daily-debate-status" aria-live="polite">
-                <span>{warRoomLoading ? 'LOADING SAVED ANALYSIS' : 'SCHEDULED RUN · 09:00 / 21:00 LONDON'}</span>
+                <span>{strategyDeskLoading ? 'LOADING SAVED ANALYSIS' : 'SCHEDULED ANALYSIS · 09:00 / 21:00 LONDON'}</span>
                 <span className="daily-debate-last-run">
-                  LAST ANALYSIS · {warRoomLoading && !activeDebate
+                  LAST ANALYSIS · {strategyDeskLoading && !activeAnalysis
                     ? 'LOADING…'
-                    : formatLondonDateTime(activeDebate?.created_at)}
+                    : formatLondonDateTime(activeAnalysis?.created_at)}
                 </span>
               </div>
             </div>
 
-            {warRoomError && <div className="war-room-error" role="alert">{warRoomError}</div>}
-            {warRoomLoading && (
+            {strategyDeskError && <div className="war-room-error" role="alert">{strategyDeskError}</div>}
+            {strategyDeskLoading && (
               <div className="war-room-progress" role="status">
                 <span className="war-room-progress-pulse" />
-                Loading the latest saved debate…
+                Loading the latest saved Strategy Desk analysis…
               </div>
             )}
 
@@ -477,68 +483,70 @@ export default function App() {
               <section className="debate-panel">
                 <div className="war-panel-heading">
                   <div>
-                    <span className="war-section-index">01 / DEBATE TRANSCRIPT</span>
-                    <h3>Signal room</h3>
+                    <span className="war-section-index">01 / ANALYSIS TRANSCRIPT</span>
+                    <h3>Evidence & Thesis Transcript</h3>
                   </div>
-                  <span className="war-round-count">{activeDebate?.transcript?.length || 0} TRANSMISSIONS</span>
+                  <span className="war-round-count">{activeAnalysis?.transcript?.length || 0} ANALYSES</span>
                 </div>
 
-                {activeDebate?.transcript?.length ? (
+                {activeAnalysis?.transcript?.length ? (
                   <div className="debate-stream">
-                    {activeDebate.transcript.map((turn, index) => (
-                      <article className={`debate-message debate-${turn.role || 'risk'}`} key={`${activeDebate.id}-${index}`}>
+                    {activeAnalysis.transcript.map((turn, index) => (
+                      <article className={`debate-message debate-${turn.role || 'risk'}`} key={`${activeAnalysis.id}-${index}`}>
                         <div className="debate-message-topline">
-                          <span className="debate-agent"><i />{turn.agent || 'Risk Manager'}</span>
+                          <span className="debate-agent"><i />{formatDeskAgentName(turn.agent || 'Desk Signal & Risk Synthesis')}</span>
                           <span className="debate-phase">
-                            {turn.phase === 'bearish-rebuttal'
-                              ? 'BEARISH REBUTTAL'
-                              : turn.phase === 'initial-analysis'
-                                ? 'OPENING THESIS'
-                                : 'CROSS-EXAMINATION'}
+                            {turn.role === 'bullish'
+                              ? 'SUPPLY THESIS'
+                              : turn.role === 'bearish' || turn.phase === 'bearish-rebuttal'
+                                ? 'DEMAND THESIS'
+                                : turn.phase === 'initial-analysis'
+                                  ? 'OPENING THESIS'
+                                  : 'MARKET ANALYSIS'}
                           </span>
                         </div>
                         <p>{turn.message}</p>
                       </article>
                     ))}
-                    {activeDebate.verdict?.rationale && (
+                    {activeAnalysis.verdict?.rationale && (
                       <article className="debate-message debate-risk">
                         <div className="debate-message-topline">
-                          <span className="debate-agent"><i />Risk Manager</span>
-                          <span className="debate-phase">EXECUTIVE SYNTHESIS</span>
+                          <span className="debate-agent"><i />Desk Signal & Risk Synthesis</span>
+                          <span className="debate-phase">DESK SYNTHESIS</span>
                         </div>
-                        <p>{activeDebate.verdict.rationale}</p>
+                        <p>{activeAnalysis.verdict.rationale}</p>
                       </article>
                     )}
                   </div>
                 ) : (
                   <div className="war-room-empty">
                     <div className="empty-radar">◎</div>
-                    <h3>{warRoomLoading ? 'Assembling analyst desk' : 'No debate runs yet'}</h3>
-                    <p>{warRoomLoading
+                    <h3>{strategyDeskLoading ? 'Preparing Strategy Desk' : 'No analyses recorded yet'}</h3>
+                    <p>{strategyDeskLoading
                       ? 'Loading saved analysis from the backend.'
-                      : 'No debate has been saved yet. The backend checks for a scheduled run at 09:00 and 21:00 Europe/London.'}</p>
+                      : 'No Strategy Desk analysis has been saved yet. The backend checks for a scheduled run at 09:00 and 21:00 Europe/London.'}</p>
                   </div>
                 )}
 
-                {warRoomDebates.length > 1 && (
+                {strategyDeskAnalyses.length > 1 && (
                   <div className="debate-history">
-                    <span className="war-section-index">RECENT DEBATE RUNS</span>
+                    <span className="war-section-index">RECENT ANALYSES</span>
                     <div className="debate-history-list">
-                      {warRoomDebates.slice(0, 5).map((debate, index) => {
-                        const isSelected = activeDebate?.id && debate.id
-                          ? activeDebate.id === debate.id
-                          : activeDebate?.created_at === debate.created_at;
-                        const signal = debate.signal || debate.verdict?.signal || '—';
-                        const dateLabel = new Date(debate.created_at).toLocaleString();
+                      {strategyDeskAnalyses.slice(0, 5).map((analysis, index) => {
+                        const isSelected = activeAnalysis?.id && analysis.id
+                          ? activeAnalysis.id === analysis.id
+                          : activeAnalysis?.created_at === analysis.created_at;
+                        const signal = analysis.signal || analysis.verdict?.signal || '—';
+                        const dateLabel = new Date(analysis.created_at).toLocaleString();
 
                         return (
                           <button
                             type="button"
-                            key={debate.id || debate.created_at || index}
+                            key={analysis.id || analysis.created_at || index}
                             className={`debate-history-item ${isSelected ? 'selected' : ''}`}
-                            onClick={() => setActiveDebate(debate)}
+                            onClick={() => setActiveAnalysis(analysis)}
                             aria-pressed={Boolean(isSelected)}
-                            aria-label={`Load ${signal} debate from ${dateLabel}`}
+                            aria-label={`Load ${signal} Strategy Desk analysis from ${dateLabel}`}
                           >
                             <span>{dateLabel}</span>
                             <b className={`history-signal signal-${signal.toLowerCase()}`}>
@@ -555,79 +563,79 @@ export default function App() {
               <aside className="verdict-panel">
                 <div className="war-panel-heading">
                   <div>
-                    <span className="war-section-index">02 / RISK CONTROL</span>
-                    <h3>Executive verdict</h3>
+                    <span className="war-section-index">02 / DESK SIGNAL & RISK SYNTHESIS</span>
+                    <h3>Executive Synthesis</h3>
                   </div>
                   <span className="verdict-shield">◆</span>
                 </div>
 
-                {activeDebate?.verdict ? (
+                {activeAnalysis?.verdict ? (
                   <>
-                    <div className={`trade-signal signal-${activeDebate.verdict.signal.toLowerCase()}`}>
+                    <div className={`trade-signal signal-${activeAnalysis.verdict.signal.toLowerCase()}`}>
                       <span className="signal-label">DESK ACTION</span>
-                      <strong>{activeDebate.verdict.signal}</strong>
-                      <span className="signal-confidence">{activeDebate.verdict.conviction}% conviction</span>
+                      <strong>{activeAnalysis.verdict.signal}</strong>
+                      <span className="signal-confidence">{activeAnalysis.verdict.conviction}% conviction</span>
                     </div>
                     <div className="verdict-price">
-                      <div><span>BRENT / BZ=F</span><strong>${Number(activeDebate.market_price).toFixed(2)}</strong></div>
-                      <span>{activeDebate.market_context?.price_basis === 'intraday' ? 'LIVE SNAPSHOT' : 'LAST CLOSE'}</span>
+                      <div><span>BRENT / BZ=F</span><strong>${Number(activeAnalysis.market_price).toFixed(2)}</strong></div>
+                      <span>{activeAnalysis.market_context?.price_basis === 'intraday' ? 'LIVE SNAPSHOT' : 'LAST CLOSE'}</span>
                     </div>
-                    {activeDebate.market_context?.market_is_closed && (
+                    {activeAnalysis.market_context?.market_is_closed && (
                       <p className="market-closed-note">
                         Market closed for the weekend · using the last close
-                        {activeDebate.market_context.price_as_of
-                          ? ` from ${activeDebate.market_context.price_as_of.slice(0, 10)}`
+                        {activeAnalysis.market_context.price_as_of
+                          ? ` from ${activeAnalysis.market_context.price_as_of.slice(0, 10)}`
                           : ''}
                       </p>
                     )}
                     <div className="direction-grid">
-                      <div><span>SHORT-TERM</span><b className={`trend-${activeDebate.verdict.short_term_trend.toLowerCase()}`}>{activeDebate.verdict.short_term_trend}</b></div>
-                      <div><span>LONG-TERM</span><b className={`trend-${activeDebate.verdict.long_term_trend.toLowerCase()}`}>{activeDebate.verdict.long_term_trend}</b></div>
+                      <div><span>SHORT-TERM</span><b className={`trend-${activeAnalysis.verdict.short_term_trend.toLowerCase()}`}>{activeAnalysis.verdict.short_term_trend}</b></div>
+                      <div><span>LONG-TERM</span><b className={`trend-${activeAnalysis.verdict.long_term_trend.toLowerCase()}`}>{activeAnalysis.verdict.long_term_trend}</b></div>
                     </div>
                     <div className="price-levels">
                       <div className="level-row">
                         <span><i className="level-dot support-dot" /> SUPPORT FLOOR</span>
-                        <strong>${Number(activeDebate.verdict.support).toFixed(2)}</strong>
+                        <strong>${Number(activeAnalysis.verdict.support).toFixed(2)}</strong>
                       </div>
                       <div className="level-track"><span className="level-marker support-marker" /></div>
                       <div className="level-row">
                         <span><i className="level-dot resistance-dot" /> RESISTANCE CEILING</span>
-                        <strong>${Number(activeDebate.verdict.resistance).toFixed(2)}</strong>
+                        <strong>${Number(activeAnalysis.verdict.resistance).toFixed(2)}</strong>
                       </div>
                       <div className="level-track"><span className="level-marker resistance-marker" /></div>
                     </div>
-                    {(activeDebate.verdict.entry || activeDebate.verdict.stop_loss || activeDebate.verdict.take_profit) && (
+                    {(activeAnalysis.verdict.entry || activeAnalysis.verdict.stop_loss || activeAnalysis.verdict.take_profit) && (
                       <div className="risk-parameters">
                         {[
-                          ['ENTRY', activeDebate.verdict.entry],
-                          ['STOP LOSS', activeDebate.verdict.stop_loss],
-                          ['TAKE PROFIT', activeDebate.verdict.take_profit],
+                          ['ENTRY', activeAnalysis.verdict.entry],
+                          ['STOP LOSS', activeAnalysis.verdict.stop_loss],
+                          ['TAKE PROFIT', activeAnalysis.verdict.take_profit],
                         ].filter(([, value]) => value !== null && value !== undefined).map(([label, value]) => (
                           <div key={label}><span>{label}</span><b>${Number(value).toFixed(2)}</b></div>
                         ))}
                       </div>
                     )}
-                    {activeDebate.verdict.risk_factors?.length > 0 && (
+                    {activeAnalysis.verdict.risk_factors?.length > 0 && (
                       <div className="risk-factors">
-                        <span className="war-section-index">RISK WATCH</span>
-                        {activeDebate.verdict.risk_factors.map((factor, index) => <p key={index}>! {factor}</p>)}
+                        <span className="war-section-index">SUPPLY CHAIN VOLATILITY WATCH</span>
+                        {activeAnalysis.verdict.risk_factors.map((factor, index) => <p key={index}>! {factor}</p>)}
                       </div>
                     )}
                     <div className="verdict-footer">
-                      <span>DATA: {activeDebate.market_context?.telemetry_source || 'TELEMETRY'} + {activeDebate.market_context?.news_source || 'NEWS'}</span>
-                      <span>{new Date(activeDebate.created_at).toLocaleString()}</span>
+                      <span>DATA: {activeAnalysis.market_context?.telemetry_source || 'TELEMETRY'} + {activeAnalysis.market_context?.news_source || 'NEWS'}</span>
+                      <span>{new Date(activeAnalysis.created_at).toLocaleString()}</span>
                     </div>
                   </>
                 ) : (
                   <div className="verdict-placeholder">
                     <div>◆</div>
-                    <p>Awaiting full debate synthesis.</p>
-                    <span>Risk Manager reconciles the technical view, bullish case, and bearish rebuttal.</span>
+                    <p>Awaiting Strategy Desk synthesis.</p>
+                    <span>The desk synthesizes technical evidence with the supply and demand theses.</span>
                   </div>
                 )}
               </aside>
             </div>
-            <div className="war-room-disclaimer">For intelligence and research only. Not investment advice. Market data and model conclusions can be incomplete or delayed.</div>
+            <div className="war-room-disclaimer">For energy-market intelligence and research only. Not investment advice. Market data and model conclusions can be incomplete or delayed.</div>
           </section>
         )}
       </main>
