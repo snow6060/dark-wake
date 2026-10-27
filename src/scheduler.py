@@ -23,8 +23,8 @@ def start_scheduler():
         max_instances=1,
         coalesce=True,
     )
-    # Run RSS headline scraping every 60 seconds
-    scheduler.add_job(fetch_and_store_rss_headlines, 'interval', seconds=60, id='rss_fetch_job', replace_existing=True)
+    # Run RSS headline scraping every 10 minutes (regulated from 60s spam)
+    scheduler.add_job(fetch_and_store_rss_headlines, 'interval', minutes=10, id='rss_fetch_job', replace_existing=True)
     if META_MODEL_API_ENABLED:
         # Refresh the Strategy Desk once daily one hour before the London market open.
         scheduler.add_job(
