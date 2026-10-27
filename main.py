@@ -103,7 +103,7 @@ def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
             "chokepoint": row.chokepoint_name,
             "tankers": row.vessel_count_tanker,
             "estimated_oil_flow": row.capacity_tanker,
-            "source": row.source or "straits.live",
+            "source": getattr(row, "source", None) or "straits.live",
         }
         for row in telemetry_rows
     ]
