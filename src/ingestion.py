@@ -116,22 +116,30 @@ def _fetch_portwatch_features(start_date: date) -> list[dict]:
     page_size = 1000
 
     while True:
-        response = requests.get(
-            PORTWATCH_QUERY_URL,
-            params={
-                "where": where,
-                "outFields": PORTWATCH_FIELDS,
-                "orderByFields": "date ASC",
-                "resultRecordCount": page_size,
-                "resultOffset": offset,
-                "f": "json",
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if "error" in payload:
-            raise RuntimeError(f"PortWatch query failed: {payload['error']}")
+        try:
+            response = requests.get(
+                PORTWATCH_QUERY_URL,
+                params={
+                    "where": where,
+                    "outFields": PORTWATCH_FIELDS,
+                    "orderByFields": "date ASC",
+                    "resultRecordCount": page_size,
+                    "resultOffset": offset,
+                    "f": "json",
+                },
+                timeout=30,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if isinstance(payload, dict) and "error" in payload:
+                # ArcGIS returns 200 with embedded error (e.g., Invalid URL / bad query)
+                raise RuntimeError(f"PortWatch query failed: {payload['error']}")
+            if not isinstance(payload, dict):
+                raise RuntimeError("PortWatch returned non-JSON response.")
+        except (requests.RequestException, ValueError, RuntimeError) as exc:
+            import logging
+            logging.warning("PortWatch request failed (%s); falling back to preserved local telemetry.", exc)
+            raise RuntimeError(f"PortWatch endpoint unavailable: {exc}") from exc
 
         page = payload.get("features")
         if not isinstance(page, list):
