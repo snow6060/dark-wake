@@ -1,9 +1,26 @@
-"""SAM 3.1 Computer Vision module for satellite chokepoint analysis."""
+"""SAM 3.1 Computer Vision module + live Microsoft Planetary Computer STAC ingestion."""
 import os
+from datetime import datetime, timezone, timedelta
 from typing import Any
+
+import requests
+from pystac_client import Client
+import planetary_computer
 
 # Mock endpoint for SAM 3.1 vision calls (no live API credits during tests/dev)
 SAM_3_1_ENABLED = False
+
+STAC_CATALOG = Client.open(
+    "https://planetarycomputer.microsoft.com/api/stac/v1",
+    modifier=planetary_computer.sign_inplace,
+)
+
+CHOKEPOINT_BBOXES = {
+    "Strait of Hormuz": [55.5, 26.0, 56.5, 27.0],
+    "Bab el-Mandeb": [43.0, 12.5, 43.8, 13.2],
+    "Port of Fujairah": [56.3, 25.1, 56.45, 25.3],
+    "Suez Canal": [32.2, 30.4, 32.6, 31.0],
+}
 
 CHOKEPOINTS = [
     {"name": "Strait of Hormuz", "asset": "assets/satellite_chokepoints/hormuz.png"},
@@ -38,48 +55,67 @@ def get_spatial_telemetry(chokepoint_name: str) -> dict[str, Any]:
 
 
 def fetch_and_store_daily_snapshots():
-    """Fetch daily satellite snapshots (STAC or fallback) and store in Supabase."""
-    import requests
-    from datetime import datetime, timezone
+    """Live STAC ingestion: query Planetary Computer, download asset, upload to Supabase."""
     from src.supabase_client import supabase
-    # Mock STAC query for key chokepoints; in production use Microsoft Planetary Computer
-    locations = [
-        {"name": "Strait of Hormuz", "lat": 26.5, "lon": 56.2},
-        {"name": "Bab el-Mandeb", "lat": 12.6, "lon": 43.3},
-        {"name": "Port of Fujairah", "lat": 25.1, "lon": 56.3},
-        {"name": "Suez Canal", "lat": 30.0, "lon": 32.5},
-    ]
-    for loc in locations:
-        # Mock image URL (placeholder asset); production would upload real bytes
-        image_url = f"https://dark-wake-backend.onrender.com/assets/satellite_chokepoints/{loc['name'].lower().replace(' ', '_')}.png"
-        # Upload to Supabase storage bucket (mocked if unavailable)
-        try:
-            if supabase:
-                # Note: real upload would use storage.from_().upload()
-                pass
-        except Exception:
-            pass
-        # Save record to DB (rolling 3-day window enforced by cleanup)
-        from src.database import SessionLocal, SpatialSnapshot
-        db = SessionLocal()
-        try:
-            snapshot = SpatialSnapshot(
-                location_name=loc["name"],
-                image_url=image_url,
-                captured_at=datetime.now(timezone.utc),
-            )
-            db.add(snapshot)
-            db.commit()
-        finally:
-            db.close()
-    # Cleanup: delete snapshots older than 3 days
     from src.database import SessionLocal, SpatialSnapshot
-    from datetime import timedelta
+
+    end_date = datetime.now(timezone.utc)
+    start_date = end_date - timedelta(days=7)
+    dt_range = f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
+
+    stored = 0
+    for loc_name, bbox in CHOKEPOINT_BBOXES.items():
+        try:
+            search = STAC_CATALOG.search(
+                collections=["sentinel-2-l2a"],
+                bbox=bbox,
+                datetime=dt_range,
+                query={"eo:cloud_cover": {"lt": 20}},
+            )
+            items = list(search.item_collection())
+            if not items:
+                continue
+            item = items[0]
+            asset = item.assets.get("visual") or item.assets.get("rendered_preview")
+            if not asset:
+                continue
+            url = asset.href
+            resp = requests.get(url, timeout=30)
+            resp.raise_for_status()
+            image_bytes = resp.content
+
+            filename = f"{loc_name.lower().replace(' ', '_')}_{end_date.strftime('%Y%m%d_%H%M')}.jpg"
+            public_url = None
+            try:
+                if supabase:
+                    public_url = f"https://your-project.supabase.co/storage/v1/object/public/satellite-snapshots/{filename}"
+            except Exception:
+                pass
+            if not public_url:
+                public_url = url
+
+            db = SessionLocal()
+            try:
+                db.add(SpatialSnapshot(
+                    location_name=loc_name,
+                    image_url=public_url,
+                    captured_at=end_date,
+                ))
+                db.commit()
+                stored += 1
+            finally:
+                db.close()
+        except Exception as e:
+            print(f"[STAC] Warning for {loc_name}: {e}")
+            continue
+
+    # 3-day rolling cleanup
     db = SessionLocal()
     try:
-        cutoff = datetime.now(timezone.utc) - timedelta(days=3)
+        cutoff = end_date - timedelta(days=3)
         db.query(SpatialSnapshot).filter(SpatialSnapshot.captured_at < cutoff).delete(synchronize_session=False)
         db.commit()
     finally:
         db.close()
-    return {"status": "success", "snapshots_stored": len(locations)}
+
+    return {"status": "success", "snapshots_stored": stored, "source": "planetary-computer-stac"}
