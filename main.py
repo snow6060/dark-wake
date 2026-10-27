@@ -91,18 +91,18 @@ def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
     except Exception as exc:
         live_result = {"status": "error", "message": str(exc)}
     # Build historical array from local chokepoint_telemetry DB for chart rendering
-    telemetry_query = db.query(ChokepointTelemetry)
+    telemetry_query = db.query(ChokepointRecord)
     if chokepoint_name:
         telemetry_query = telemetry_query.filter(
-            ChokepointTelemetry.chokepoint_name.like(f"%{chokepoint_name}%")
+            ChokepointRecord.chokepoint_name.like(f"%{chokepoint_name}%")
         )
-    telemetry_rows = telemetry_query.order_by(ChokepointTelemetry.date.desc()).limit(90).all()
+    telemetry_rows = telemetry_query.order_by(ChokepointRecord.date.desc()).limit(90).all()
     historical = [
         {
             "date": str(row.date),
             "chokepoint": row.chokepoint_name,
-            "tankers": row.tankers,
-            "estimated_oil_flow": row.estimated_oil_flow,
+            "tankers": row.vessel_count_tanker,
+            "estimated_oil_flow": row.capacity_tanker,
             "source": row.source or "straits.live",
         }
         for row in telemetry_rows
