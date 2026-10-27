@@ -27,14 +27,14 @@ const formatDeskAgentName = name => ({
 }[name] || name);
 
 const SPATIAL_LOCATIONS = {
-  hormuz: { name: 'Strait of Hormuz', type: 'chokepoint', region: 'Persian Gulf' },
-  bab: { name: 'Bab el-Mandeb', type: 'chokepoint', region: 'Red Sea' },
-  fujairah: { name: 'Port of Fujairah', type: 'dock', region: 'Gulf of Oman' },
-  suez: { name: 'Suez Canal', type: 'canal', region: 'Egypt' },
-  malacca: { name: 'Malacca Strait / Singapore Hub', type: 'chokepoint', region: 'SE Asia' },
-  singapore: { name: 'Port of Singapore', type: 'dock', region: 'SE Asia' },
-  rotterdam: { name: 'Port of Rotterdam', type: 'dock', region: 'North Sea' },
-  jebel_ali: { name: 'Port of Jebel Ali', type: 'dock', region: 'Persian Gulf' },
+  hormuz: { name: 'Strait of Hormuz', type: 'chokepoint', region: 'Persian Gulf', coords: '26.42° N, 56.51° E' },
+  bab: { name: 'Bab el-Mandeb', type: 'chokepoint', region: 'Red Sea', coords: '12.65° N, 43.42° E' },
+  fujairah: { name: 'Port of Fujairah', type: 'dock', region: 'Gulf of Oman', coords: '25.16° N, 56.39° E' },
+  suez: { name: 'Suez Canal', type: 'canal', region: 'Egypt', coords: '29.94° N, 32.56° E' },
+  malacca: { name: 'Malacca Strait / Singapore Hub', type: 'chokepoint', region: 'SE Asia', coords: '1.20° N, 103.68° E' },
+  singapore: { name: 'Port of Singapore', type: 'dock', region: 'SE Asia', coords: '1.25° N, 103.75° E' },
+  rotterdam: { name: 'Port of Rotterdam', type: 'dock', region: 'North Sea', coords: '51.96° N, 4.08° E' },
+  jebel_ali: { name: 'Port of Jebel Ali', type: 'dock', region: 'Persian Gulf', coords: '25.01° N, 55.06° E' },
 };
 
 const FALLBACK_IMAGES = {
@@ -104,7 +104,7 @@ export default function App() {
     token: `SAM31-${spatialChokepoint.toUpperCase()}-01`,
   };
 
-  const filteredSnapshots = (spatialSnapshots || []).filter(s => {
+  const matchedSnapshots = (spatialSnapshots || []).filter(s => {
     const sName = (s?.location_name || '').toLowerCase();
     const targetKey = spatialChokepoint.toLowerCase();
     const targetName = currentLocName.toLowerCase();
@@ -121,6 +121,15 @@ export default function App() {
       (targetKey === 'jebel_ali' && sName.includes('jebel'))
     );
   });
+
+  const onlineSnapshots = matchedSnapshots.filter(s => (s?.image_url || '').startsWith('http'));
+  const filteredSnapshots = (onlineSnapshots.length > 0 ? onlineSnapshots : matchedSnapshots)
+    .sort((a, b) => {
+      const aHires = (a?.image_url || '').includes('_hires_') ? 1 : 0;
+      const bHires = (b?.image_url || '').includes('_hires_') ? 1 : 0;
+      if (bHires !== aHires) return bHires - aHires;
+      return new Date(b?.captured_at || 0) - new Date(a?.captured_at || 0);
+    });
 
   const displaySnapshots = filteredSnapshots.length > 0
     ? filteredSnapshots
@@ -645,7 +654,7 @@ export default function App() {
                   <div className="spatial-scanline-overlay" />
 
                   <div className="spatial-hud-crosshairs">
-                    REC: {currentLocObj.region?.toUpperCase()} // 10M RES // B02-B04 RGB
+                    REC: {currentLocObj.region?.toUpperCase()} // {currentLocObj.coords} // 1280x720 HIGH-RES OPTICAL
                   </div>
 
                   <div className="spatial-hud-badge">
@@ -744,6 +753,20 @@ export default function App() {
                 </div>
 
                 <div className="spatial-telemetry-rows">
+                  <div className="spatial-row-item">
+                    <span className="spatial-row-label">Geographic Coordinates</span>
+                    <span className="spatial-row-value" style={{ color: '#7dd3fc', fontSize: '0.68rem' }}>
+                      {currentLocObj.coords}
+                    </span>
+                  </div>
+
+                  <div className="spatial-row-item">
+                    <span className="spatial-row-label">Optical Resolution</span>
+                    <span className="spatial-row-value" style={{ color: '#34d399', fontSize: '0.68rem' }}>
+                      1280x720 High-Res Ortho
+                    </span>
+                  </div>
+
                   <div className="spatial-row-item">
                     <span className="spatial-row-label">Estimated Vessel Count</span>
                     <span className="spatial-row-value">{currentLocTelemetry.vessels} vessels</span>
