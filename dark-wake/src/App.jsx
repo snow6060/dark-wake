@@ -42,11 +42,19 @@ export default function App() {
   const [chokepointTab, setChokepointTab] = useState('hormuz');
   const [showFullChokepointModal, setShowFullChokepointModal] = useState(false);
   const [spatialChokepoint, setSpatialChokepoint] = useState('hormuz');
+  useEffect(() => {
+    fetch(`${API_BASE_URL}/api/spatial/snapshots`)
+      .then(r => r.json())
+      .then(data => setSpatialSnapshots(data.snapshots || []))
+      .catch(() => setSpatialSnapshots([]));
+  }, []);
+
   const [spatialTelemetry] = useState({
     hormuz: { index: 62, vessels: 47, latency: 'Medium' },
     bab: { index: 38, vessels: 31, latency: 'Low' },
     malacca: { index: 71, vessels: 58, latency: 'High' },
   });
+  const [spatialSnapshots, setSpatialSnapshots] = useState([]);
 
   const [priceHistory, setPriceHistory] = useState([
     { time: '2:00 AM', price: 100.50 },
@@ -508,6 +516,25 @@ export default function App() {
                 <div><span>Estimated Vessel Count</span><strong>{spatialTelemetry[spatialChokepoint].vessels}</strong></div>
                 <div><span>Transit Latency Risk</span><strong>{spatialTelemetry[spatialChokepoint].latency}</strong></div>
                 <div><span>SAM 3.1 Token</span><strong>mock-token-{spatialChokepoint}</strong></div>
+              </div>
+            </div>
+
+            <div className="spatial-snapshots-panel">
+              <h3>Satellite Snapshots — 3-Day Rolling Window</h3>
+              <div className="snapshot-grid">
+                {spatialSnapshots.length === 0 ? (
+                  <p className="no-data-msg">No satellite snapshots loaded yet.</p>
+                ) : (
+                  spatialSnapshots.map((snap, i) => (
+                    <div key={snap.id || i} className="snapshot-card">
+                      <img src={snap.image_url} alt={snap.location_name} className="snapshot-img" />
+                      <div className="snapshot-meta">
+                        <strong>{snap.location_name}</strong>
+                        <span>{snap.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>
+                      </div>
+                    </div>
+                  ))
+                )}
               </div>
             </div>
           </div>

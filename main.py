@@ -83,6 +83,29 @@ def read_root():
 def health_check():
     return {"status": "ok"}
 
+@app.get("/api/spatial/snapshots")
+def get_spatial_snapshots():
+    from src.database import SessionLocal, SpatialSnapshot
+    db = SessionLocal()
+    try:
+        rows = db.query(SpatialSnapshot).order_by(SpatialSnapshot.captured_at.desc()).limit(12).all()
+        return {
+            "snapshots": [
+                {
+                    "id": r.id,
+                    "location_name": r.location_name,
+                    "image_url": r.image_url,
+                    "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+                }
+                for r in rows
+            ],
+            "rolling_window_days": 3,
+            "source": "straits.live / satellite-snapshots",
+        }
+    finally:
+        db.close()
+
+
 @app.get("/api/chokepoints")
 def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
     # Straits.live is the sole live telemetry source; PortWatch/TankerMap deprecated

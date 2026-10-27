@@ -9,6 +9,14 @@ engine = create_engine(DB_PATH, connect_args=connect_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
+class SpatialSnapshot(Base):
+    __tablename__ = "spatial_snapshots"
+    id = Column(Integer, primary_key=True, index=True)
+    location_name = Column(String, nullable=False)
+    image_url = Column(String, nullable=False)
+    captured_at = Column(DateTime, nullable=False)
+
+
 class ChokepointRecord(Base):
     __tablename__ = "chokepoint_daily"
     
