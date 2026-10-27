@@ -20,7 +20,7 @@ from src.straits_live import STRAITS_LIVE_MAX_AGE, fetch_straits_live_hormuz_dat
 from src.supabase_client import supabase
 from src.ingestion import (
     RSS_HEADLINE_LIMIT,
-    fetch_imf_chokepoint_data,
+    fetch_straits_live_chokepoint_data,
     fetch_and_store_rss_headlines,
     sanitize_energy_news,
 )
@@ -40,7 +40,7 @@ from src.market_data import get_brent_market_snapshot
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    fetch_imf_chokepoint_data()
+    fetch_straits_live_chokepoint_data()
     fetch_straits_live_hormuz_data()
     fetch_tankermap_chokepoint_data()
     fetch_and_store_rss_headlines()
@@ -213,7 +213,7 @@ def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
 
 @app.post("/api/ingest-trigger")
 def trigger_ingestion():
-    result = fetch_imf_chokepoint_data()
+    result = fetch_straits_live_chokepoint_data()
     if result["status"] != "success":
         raise HTTPException(status_code=502, detail=result)
     return {"message": "Ingestion executed successfully", "details": result}
