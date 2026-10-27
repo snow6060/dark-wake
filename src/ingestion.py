@@ -82,249 +82,6 @@ def sanitize_energy_news(text: str) -> tuple[str, str]:
         )
     return plain_text[:500], category
 
-PORTWATCH_QUERY_URL = (
-    "https://services9.arcgis.com/weJ1QsnbMYJlCHdG/arcgis/rest/services/"
-    "Daily_Chokepoints_Data/FeatureServer/0/query"
-)
-PORTWATCH_CHOKEPOINTS = {
-    "chokepoint6": "Strait of Hormuz",
-    "chokepoint4": "Bab el-Mandeb",
-}
-PORTWATCH_FIELDS = (
-    "date,portid,n_total,n_tanker,n_container,capacity_tanker"
-)
-BARRELS_PER_METRIC_TON = 7.33
-
-
-def _portwatch_date(value) -> date:
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value / 1000, tz=timezone.utc).date()
-    return date.fromisoformat(str(value)[:10])
-
-
-def _fetch_portwatch_features(start_date: date) -> list[dict]:
-    where = (
-        "portid IN ('chokepoint4','chokepoint6') "
-        f"AND date >= '{start_date.isoformat()}'"
-    )
-    features = []
-    offset = 0
-    page_size = 1000
-
-    while True:
-        try:
-            response = requests.get(
-                PORTWATCH_QUERY_URL,
-                params={
-                    "where": where,
-                    "outFields": PORTWATCH_FIELDS,
-                    "orderByFields": "date ASC",
-                    "resultRecordCount": page_size,
-                    "resultOffset": offset,
-                    "f": "json",
-                },
-                timeout=30,
-            )
-            response.raise_for_status()
-            payload = response.json()
-            if isinstance(payload, dict) and "error" in payload:
-                # ArcGIS returns 200 with embedded error (e.g., Invalid URL / bad query)
-                raise RuntimeError(f"PortWatch query failed: {payload['error']}")
-            if not isinstance(payload, dict):
-                raise RuntimeError("PortWatch returned non-JSON response.")
-        except (requests.RequestException, ValueError, RuntimeError) as exc:
-            import logging
-            logging.warning("PortWatch request failed (%s); falling back to preserved local telemetry.", exc)
-            raise RuntimeError(f"PortWatch endpoint unavailable: {exc}") from exc
-
-        page = payload.get("features")
-        if not isinstance(page, list):
-            raise RuntimeError("PortWatch returned an invalid feature response.")
-        features.extend(page)
-        if len(page) < page_size:
-            break
-        offset += len(page)
-
-    if not features:
-        raise RuntimeError("PortWatch returned no chokepoint records.")
-    return features
-
-
-def _prepare_portwatch_records(features: list[dict]) -> list[dict]:
-    records = []
-    for feature in features:
-        attributes = feature.get("attributes")
-        if not isinstance(attributes, dict):
-            raise RuntimeError("PortWatch returned a feature without attributes.")
-
-        portid = attributes.get("portid")
-        chokepoint_name = PORTWATCH_CHOKEPOINTS.get(portid)
-        if chokepoint_name is None:
-            continue
-
-        records.append({
-            "date": _portwatch_date(attributes["date"]),
-            "chokepoint_name": chokepoint_name,
-            "portid": portid,
-            "vessel_count_total": float(attributes.get("n_total") or 0),
-            "vessel_count_tanker": float(attributes.get("n_tanker") or 0),
-            "vessel_count_container": float(attributes.get("n_container") or 0),
-            "capacity_tanker": float(attributes.get("capacity_tanker") or 0),
-        })
-
-    if not records:
-        raise RuntimeError("PortWatch returned no records for the monitored chokepoints.")
-
-    records.sort(key=lambda record: (record["chokepoint_name"], record["date"]))
-    grouped: dict[str, list[dict]] = {}
-    for record in records:
-        grouped.setdefault(record["chokepoint_name"], []).append(record)
-
-    if set(grouped) != set(PORTWATCH_CHOKEPOINTS.values()):
-        raise RuntimeError("PortWatch response did not include both monitored chokepoints.")
-
-    for chokepoint_records in grouped.values():
-        for index, record in enumerate(chokepoint_records):
-            baseline_records = chokepoint_records[max(0, index - 29):index + 1]
-            baseline = sum(item["vessel_count_total"] for item in baseline_records) / len(baseline_records)
-            record["baseline_avg"] = round(baseline, 2)
-            record["deviation_pct"] = (
-                round((record["vessel_count_total"] - baseline) / baseline * 100, 2)
-                if baseline
-                else 0.0
-            )
-    return records
-
-
-STRAITS_LIVE_STATUS_URL = "https://straits.live/status"
-STRAITS_LIVE_HEADERS = {"User-Agent": "dark-wake/0.2.1 (energy-intel; +https://github.com/snow6060/dark-wake)"}
-
-
-def fetch_straits_live_chokepoint_data() -> dict:
-    """Ingest real-time chokepoint telemetry from straits.live (keyless)."""
-    try:
-        resp = requests.get(STRAITS_LIVE_STATUS_URL, headers=STRAITS_LIVE_HEADERS, timeout=10)
-        resp.raise_for_status()
-        payload = resp.json()
-        verdict = payload.get("verdict") or {}
-        result = {
-            "status": "success",
-            "source": "straits.live",
-            "verdict_status": verdict.get("status"),
-            "verdict_short": verdict.get("short"),
-            "transits_ma7": payload.get("transits_ma7"),
-            "ais_dark_tankers": payload.get("ais_dark_tankers"),
-            "ships_stranded": payload.get("ships_stranded"),
-            "ships_stranded_offshore": payload.get("ships_stranded_offshore"),
-            "brent_usd": payload.get("brent_usd"),
-            "wti_usd": payload.get("wti_usd"),
-        }
-        return result
-    except Exception as exc:
-        import logging
-        logging.warning("straits.live unavailable (%s); falling back to IMF PortWatch.", exc)
-        try:
-            return fetch_imf_chokepoint_data()
-        except Exception as fallback_exc:
-            logging.warning("PortWatch fallback also failed (%s).", fallback_exc)
-            return {"status": "error", "source": "straits.live+PortWatch", "message": str(exc)}
-
-
-def fetch_imf_chokepoint_data():
-    """Fetch real IMF PortWatch telemetry and persist it to local SQLite."""
-    start_date = datetime.now(timezone.utc).date() - timedelta(days=89)
-    try:
-        records = _prepare_portwatch_records(_fetch_portwatch_features(start_date))
-    except (requests.RequestException, ValueError, KeyError, RuntimeError) as error:
-        message = f"PortWatch ingestion failed; existing local telemetry was preserved: {error}"
-        print(f"[PortWatch Error] {message}")
-        return {
-            "status": "error",
-            "source": "IMF PortWatch",
-            "message": str(error),
-        }
-
-    init_db()
-    db = SessionLocal()
-    try:
-        dates = {record["date"] for record in records}
-        names = {record["chokepoint_name"] for record in records}
-        existing = db.query(ChokepointRecord).filter(
-            and_(
-                ChokepointRecord.date.in_(dates),
-                ChokepointRecord.chokepoint_name.in_(names),
-            )
-        ).all()
-        existing_by_key = {
-            (record.date, record.chokepoint_name): record
-            for record in existing
-        }
-
-        for values in records:
-            key = (values["date"], values["chokepoint_name"])
-            record = existing_by_key.get(key)
-            if record is None:
-                db.add(ChokepointRecord(**values))
-            else:
-                for field, value in values.items():
-                    setattr(record, field, value)
-
-        latest_dates = {
-            name: max(record["date"] for record in records if record["chokepoint_name"] == name)
-            for name in names
-        }
-        for name, latest_date in latest_dates.items():
-            db.query(ChokepointRecord).filter(
-                ChokepointRecord.chokepoint_name == name,
-                ChokepointRecord.date > latest_date,
-            ).delete(synchronize_session=False)
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
-
-    cloud_warning = None
-    if supabase:
-        cloud_records = [
-            {
-                **record,
-                "date": record["date"].isoformat(),
-                "vessel_count_total": record["vessel_count_total"],
-                "vessel_count_tanker": record["vessel_count_tanker"],
-                "vessel_count_container": record["vessel_count_container"],
-            }
-            for record in records
-        ]
-        for record in cloud_records:
-            record.pop("capacity_tanker", None)
-        try:
-            supabase.table("chokepoint_records").upsert(
-                cloud_records,
-                on_conflict="date,chokepoint_name",
-            ).execute()
-        except Exception as error:
-            cloud_warning = str(error)
-            print(f"[PortWatch Warning] Local SQLite updated, Supabase sync failed: {error}")
-
-    result = {
-        "status": "success",
-        "source": "IMF PortWatch",
-        "records_processed": len(records),
-        "latest_data_date": {
-            name: record_date.isoformat()
-            for name, record_date in latest_dates.items()
-        },
-    }
-    if cloud_warning:
-        result["supabase_warning"] = cloud_warning
-    return result
-
 def analyze_sentiment(title: str) -> str:
     """
     Keyword-based sentiment analyzer classifying crude oil and supply-chain impact
@@ -392,6 +149,39 @@ def _prune_rss_headlines() -> int:
         if len(stale_ids) < RSS_HEADLINE_PRUNE_BATCH_SIZE:
             break
     return deleted_count
+
+
+STRAITS_LIVE_STATUS_URL = "https://straits.live/status"
+STRAITS_LIVE_HEADERS = {"User-Agent": "dark-wake/0.2.1 (energy-intel; +https://github.com/snow6060/dark-wake)"}
+
+
+def fetch_straits_live_chokepoint_data() -> dict:
+    """Ingest real-time chokepoint telemetry from straits.live (keyless)."""
+    try:
+        resp = requests.get(STRAITS_LIVE_STATUS_URL, headers=STRAITS_LIVE_HEADERS, timeout=10)
+        resp.raise_for_status()
+        payload = resp.json()
+        verdict = payload.get("verdict") or {}
+        result = {
+            "status": "success",
+            "source": "straits.live",
+            "verdict_status": verdict.get("status"),
+            "verdict_short": verdict.get("short"),
+            "transits_ma7": payload.get("transits_ma7"),
+            "ais_dark_tankers": payload.get("ais_dark_tankers"),
+            "ships_stranded": payload.get("ships_stranded"),
+            "ships_stranded_offshore": payload.get("ships_stranded_offshore"),
+            "brent_usd": payload.get("brent_usd"),
+            "wti_usd": payload.get("wti_usd"),
+        }
+        assert isinstance(result.get("verdict_status"), (str, type(None)))
+        assert isinstance(result.get("transits_ma7"), (int, float, type(None)))
+        assert isinstance(result.get("ais_dark_tankers"), (int, float, type(None)))
+        return result
+    except Exception as exc:
+        import logging
+        logging.warning("straits.live unavailable (%s). No PortWatch fallback (deprecated).", exc)
+        return {"status": "error", "source": "straits.live", "message": str(exc)}
 
 
 def fetch_and_store_rss_headlines():

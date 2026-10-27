@@ -1,7 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
-from src.ingestion import fetch_imf_chokepoint_data, fetch_and_store_rss_headlines
+from src.ingestion import fetch_straits_live_chokepoint_data, fetch_and_store_rss_headlines
 from src.straits_live import fetch_straits_live_hormuz_data
 from src.tankermap import fetch_tankermap_chokepoint_data
 from src.agents import META_MODEL_API_ENABLED, run_debate_if_due
@@ -9,7 +9,7 @@ from src.agents import META_MODEL_API_ENABLED, run_debate_if_due
 def start_scheduler():
     scheduler = BackgroundScheduler()
     # Run chokepoint ingestion every hour
-    scheduler.add_job(fetch_imf_chokepoint_data, 'interval', hours=1, id='portwatch_sync', replace_existing=True)
+    scheduler.add_job(fetch_straits_live_chokepoint_data, 'interval', hours=1, id='straits_live_sync', replace_existing=True)
     scheduler.add_job(
         fetch_tankermap_chokepoint_data,
         'interval',
@@ -48,4 +48,4 @@ def start_scheduler():
         )
 
     scheduler.start()
-    print("⏰ Background APScheduler initialized for PortWatch, TankerMap, Straits.live, RSS, and Strategy Desk analysis.")
+    print("⏰ Background APScheduler initialized for straits.live, RSS, and Strategy Desk analysis.")
