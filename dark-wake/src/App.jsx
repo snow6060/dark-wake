@@ -42,11 +42,20 @@ export default function App() {
   const [chokepointTab, setChokepointTab] = useState('hormuz');
   const [showFullChokepointModal, setShowFullChokepointModal] = useState(false);
   const [spatialChokepoint, setSpatialChokepoint] = useState('hormuz');
-  useEffect(() => {
+  const [spatialSnapshots, setSpatialSnapshots] = useState([]);
+  const [snapshotsLoading, setSnapshotsLoading] = useState(false);
+
+  const fetchSnapshots = () => {
+    setSnapshotsLoading(true);
     fetch(`${API_BASE_URL}/api/spatial/snapshots`)
       .then(r => r.json())
       .then(data => setSpatialSnapshots(data.snapshots || []))
-      .catch(() => setSpatialSnapshots([]));
+      .catch(() => setSpatialSnapshots([]))
+      .finally(() => setSnapshotsLoading(false));
+  };
+
+  useEffect(() => {
+    fetchSnapshots();
   }, []);
 
   const [spatialTelemetry] = useState({
@@ -496,21 +505,35 @@ export default function App() {
               </button>
             </div>
 
-            <div className="spatial-viewer-panel">
-              <div className="spatial-viewer-header">
-                <h3>SAM 3.1 Viewer — {spatialChokepoint === 'hormuz' ? 'Strait of Hormuz' : spatialChokepoint === 'bab' ? 'Bab el-Mandeb' : 'Malacca Strait'}</h3>
-                <span className="source-badge">Placeholder satellite tile · Replace with real imagery when available</span>
-              </div>
-              <div className="spatial-viewer-frame">
-                <img src={`/assets/satellite_chokepoints/${spatialChokepoint === 'hormuz' ? 'hormuz' : spatialChokepoint === 'bab' ? 'bab_el_mandeb' : 'malacca'}.png`} alt="SAM 3.1 satellite tile" className="satellite-tile" />
-                <div className="mask-overlay" style={{ borderColor: spatialTelemetry[spatialChokepoint].index > 70 ? '#f43f5e' : spatialTelemetry[spatialChokepoint].index > 40 ? '#f59e0b' : '#22c55e' }}>
-                  <span className="mask-label">Segment mask · {spatialTelemetry[spatialChokepoint].vessels} vessels · Latency risk {spatialTelemetry[spatialChokepoint].latency}</span>
+            <div className="spatial-snapshots-panel">
+              <div className="panel-header-flex">
+                <div>
+                  <h3>Satellite Snapshots — {spatialChokepoint === 'hormuz' ? 'Strait of Hormuz' : spatialChokepoint === 'bab' ? 'Bab el-Mandeb' : spatialChokepoint === 'malacca' ? 'Malacca Strait' : 'Suez Canal'}</h3>
+                  <span className="chart-subtext">Last 3 days · {snapshotsLoading ? 'Loading…' : snapshots.length + ' records'}</span>
                 </div>
+                <button onClick={fetchSnapshots} className="refresh-btn" disabled={snapshotsLoading}>↻ Refresh</button>
               </div>
+              {snapshotsLoading ? (
+                <div className="snapshot-grid"><p className="no-data-msg">Loading satellite snapshots…</p></div>
+              ) : snapshots.length === 0 ? (
+                <div className="snapshot-grid"><p className="no-data-msg">No satellite snapshots loaded yet.</p></div>
+              ) : (
+                <div className="snapshot-grid">
+                  {snapshots.map((snap, i) => (
+                    <div key={snap.id || i} className="snapshot-card">
+                      <img src={snap.image_url} alt={snap.location_name} className="snapshot-img" />
+                      <div className="snapshot-meta">
+                        <strong>{snap.location_name}</strong>
+                        <span>{snap.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="telemetry-panel">
-              <h3>Spatial Telemetry — {spatialChokepoint === 'hormuz' ? 'Strait of Hormuz' : spatialChokepoint === 'bab' ? 'Bab el-Mandeb' : 'Malacca Strait'}</h3>
+              <h3>Spatial Telemetry — {spatialChokepoint === 'hormuz' ? 'Strait of Hormuz' : spatialChokepoint === 'bab' ? 'Bab el-Mandeb' : spatialChokepoint === 'malacca' ? 'Malacca Strait' : 'Suez Canal'}</h3>
               <div className="telemetry-grid">
                 <div><span>Spatial Congestion Index</span><strong>{spatialTelemetry[spatialChokepoint].index} / 100</strong></div>
                 <div><span>Estimated Vessel Count</span><strong>{spatialTelemetry[spatialChokepoint].vessels}</strong></div>

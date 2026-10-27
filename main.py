@@ -25,6 +25,7 @@ from src.ingestion import (
     sanitize_energy_news,
 )
 from src.scheduler import start_scheduler
+from src.vision import fetch_and_store_daily_snapshots
 from src.agents import (
     MetaModelQuotaError,
     get_recent_debates,
@@ -35,6 +36,16 @@ from src.market_data import get_brent_market_snapshot
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
+    # Phase 1: immediate spatial ingestion if table empty
+    try:
+        from src.database import SessionLocal, SpatialSnapshot
+        db = SessionLocal()
+        count = db.query(SpatialSnapshot).count()
+        db.close()
+        if count == 0:
+            fetch_and_store_daily_snapshots()
+    except Exception:
+        pass
     fetch_straits_live_chokepoint_data()
     fetch_straits_live_hormuz_data()
     fetch_and_store_rss_headlines()
@@ -104,6 +115,12 @@ def get_spatial_snapshots():
         }
     finally:
         db.close()
+
+@app.post("/api/spatial/fetch-now")
+def trigger_spatial_fetch():
+    """Manual trigger to ingest satellite snapshots immediately."""
+    result = fetch_and_store_daily_snapshots()
+    return result
 
 
 @app.get("/api/chokepoints")
