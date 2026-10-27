@@ -49,6 +49,11 @@ def run_debate_if_due(*args, **kwargs):
     logging.warning("run_debate_if_due called but debates are hardcoded off (META_MODEL_API_ENABLED=False). No debate executed.")
     return None
 
+def get_recent_debates():
+    import logging
+    logging.warning("get_recent_debates called but debates are hardcoded off (META_MODEL_API_ENABLED=False). Returning empty list.")
+    return []
+
 META_MODEL_FALLBACKS = (
     "meta-models/muse-spark-open",
     "llama-3.1-70b-instruct",
