@@ -48,6 +48,16 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertEqual(interaction.call_count, 2)
         sleep.assert_called_once_with(3)
 
+    @patch("src.agents._meta_model_api_key")
+    @patch("src.agents.requests.post")
+    def test_meta_model_request_is_blocked_by_default(self, post, api_key):
+        with self.assertRaisesRegex(RuntimeError, "disabled during development"):
+            _meta_model_interaction("system", "prompt", "model", 1200)
+
+        api_key.assert_not_called()
+        post.assert_not_called()
+
+    @patch("src.agents.META_MODEL_API_ENABLED", True)
     @patch("src.agents.requests.post")
     @patch("src.agents._meta_model_api_key", return_value="configured")
     def test_meta_model_uses_openai_compatible_responses_request(
@@ -96,6 +106,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
             ["requested-model", "meta-models/muse-spark-open"],
         )
 
+    @patch("src.agents.META_MODEL_API_ENABLED", True)
     @patch("src.agents.requests.post")
     @patch("src.agents._meta_model_api_key", return_value="sensitive-test-key")
     def test_meta_model_error_redacts_api_key(self, _api_key, post):
@@ -440,6 +451,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         get_recent_debates.assert_called_once_with()
         run_debate.assert_not_called()
 
+    @patch("src.agents.META_MODEL_API_ENABLED", True)
     @patch("src.agents.run_agent_pipeline")
     @patch("src.agents.get_recent_debates")
     def test_due_check_reuses_analysis_under_twenty_four_hours(
@@ -471,6 +483,25 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertEqual(len(result["broadcast_summary"].split("\n\n")), 3)
         run_agent_pipeline.assert_not_called()
 
+    @patch("src.agents.get_recent_debates")
+    def test_due_check_is_blocked_without_loading_history_when_disabled(
+        self,
+        get_recent_debates,
+    ):
+        with self.assertRaisesRegex(RuntimeError, "debate runs are disabled"):
+            run_debate_if_due()
+
+        get_recent_debates.assert_not_called()
+
+    def test_manual_analysis_endpoints_return_503_when_disabled(self):
+        for endpoint in (main.trigger_agent_analysis, main.run_strategy_desk_analysis):
+            with self.subTest(endpoint=endpoint.__name__):
+                with self.assertRaises(HTTPException) as raised:
+                    endpoint()
+                self.assertEqual(raised.exception.status_code, 503)
+                self.assertIn("debate runs are disabled", raised.exception.detail)
+
+    @patch("src.agents.META_MODEL_API_ENABLED", True)
     @patch("src.agents.run_agent_pipeline", return_value={"id": "new-debate"})
     @patch("src.agents.get_recent_debates")
     def test_due_check_runs_analysis_after_twenty_four_hours(
@@ -486,6 +517,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertEqual(run_debate_if_due(), {"id": "new-debate"})
         run_agent_pipeline.assert_called_once_with()
 
+    @patch("src.scheduler.META_MODEL_API_ENABLED", True)
     @patch("src.scheduler.BackgroundScheduler")
     def test_scheduler_runs_strategy_desk_daily_at_eight_london(
         self,
@@ -505,6 +537,22 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertEqual(strategy_desk_job.kwargs["hour"], 8)
         self.assertEqual(strategy_desk_job.kwargs["minute"], 0)
         self.assertEqual(strategy_desk_job.kwargs["timezone"], "Europe/London")
+
+    @patch("src.scheduler.BackgroundScheduler")
+    def test_scheduler_does_not_register_strategy_desk_job_when_disabled(
+        self,
+        scheduler_factory,
+    ):
+        from src.scheduler import start_scheduler
+
+        scheduler = scheduler_factory.return_value
+        with patch("builtins.print"):
+            start_scheduler()
+
+        job_ids = {
+            call.kwargs.get("id") for call in scheduler.add_job.call_args_list
+        }
+        self.assertNotIn("strategy_desk_daily_analysis", job_ids)
 
 
 if __name__ == "__main__":

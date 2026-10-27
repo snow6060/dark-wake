@@ -41,17 +41,17 @@ class RssFeedFetchTests(unittest.TestCase):
         self.assertEqual(urlopen.call_args.kwargs["timeout"], 10)
 
     @patch("src.ingestion.supabase")
-    def test_prunes_all_rows_beyond_newest_50(self, supabase_client):
+    def test_prunes_all_rows_beyond_newest_100(self, supabase_client):
         query = supabase_client.table.return_value
         query.select.return_value = query
         query.order.return_value = query
         query.range.return_value = query
         query.execute.side_effect = [
-            MagicMock(data=[{"id": 51}, {"id": 52}]),
+            MagicMock(data=[{"id": 101}, {"id": 102}]),
             MagicMock(data=[]),
         ]
         query.delete.return_value.in_.return_value.execute.return_value = MagicMock(
-            data=[{"id": 51}, {"id": 52}]
+            data=[{"id": 101}, {"id": 102}]
         )
 
         deleted_count = _prune_rss_headlines()
@@ -59,8 +59,8 @@ class RssFeedFetchTests(unittest.TestCase):
         self.assertEqual(deleted_count, 2)
         query.select.assert_called_once_with("id")
         query.order.assert_called_once_with("created_at", desc=True)
-        query.range.assert_called_once_with(50, 1049)
-        query.delete.return_value.in_.assert_called_once_with("id", [51, 52])
+        query.range.assert_called_once_with(100, 1099)
+        query.delete.return_value.in_.assert_called_once_with("id", [101, 102])
 
     def test_uses_rss_publication_time_for_headline_ordering(self):
         entry = {"published_parsed": time.gmtime(1792656000)}
@@ -101,7 +101,7 @@ class RssFeedFetchTests(unittest.TestCase):
         self.assertEqual(category, "shipping_routes")
         self.assertNotRegex(headline.lower(), r"\b(middle east|tensions|crude)\b")
 
-    def test_news_endpoint_requests_newest_rows_before_limiting(self):
+    def test_news_endpoint_requests_newest_rows_before_limiting_100(self):
         import main
 
         client = MagicMock()
@@ -120,7 +120,7 @@ class RssFeedFetchTests(unittest.TestCase):
 
         self.assertEqual(headlines[0]["id"], 1)
         query.order.assert_called_once_with("created_at", desc=True)
-        query.limit.assert_called_once_with(50)
+        query.limit.assert_called_once_with(100)
 
 
 if __name__ == "__main__":

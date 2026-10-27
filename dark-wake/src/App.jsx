@@ -41,6 +41,12 @@ export default function App() {
   const [portwatchDataAsOf, setPortwatchDataAsOf] = useState(null);
   const [chokepointTab, setChokepointTab] = useState('hormuz');
   const [showFullChokepointModal, setShowFullChokepointModal] = useState(false);
+  const [spatialChokepoint, setSpatialChokepoint] = useState('hormuz');
+  const [spatialTelemetry] = useState({
+    hormuz: { index: 62, vessels: 47, latency: 'Medium' },
+    bab: { index: 38, vessels: 31, latency: 'Low' },
+    malacca: { index: 71, vessels: 58, latency: 'High' },
+  });
 
   const [priceHistory, setPriceHistory] = useState([
     { time: '2:00 AM', price: 100.50 },
@@ -219,6 +225,7 @@ export default function App() {
           {[
             { id: 'news', label: 'News & Price' },
             { id: 'strategy-desk', label: 'Energy Strategy Desk' },
+            { id: 'spatial-intelligence', label: 'Spatial Intelligence' },
           ].map((tab) => (
             <button
               key={tab.id}
@@ -448,6 +455,59 @@ export default function App() {
                     </div>
                   </div>
                 )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {activeTab === 'spatial-intelligence' && (
+          <div className="space-y-6">
+            <div className="panel-header-flex">
+              <div>
+                <h2 className="panel-title">SAM 3.1 Spatial Intelligence</h2>
+                <span className="chart-subtext">Satellite segmentation · Chokepoint congestion · Vessel cluster masks</span>
+              </div>
+              <span className="source-badge">Mock SAM 3.1 · Zero-fail fallback</span>
+            </div>
+
+            <div className="cards-grid-3">
+              <button onClick={() => setSpatialChokepoint('hormuz')} className={`card ${spatialChokepoint === 'hormuz' ? 'active-card' : ''}`}>
+                <p className="card-label">Strait of Hormuz</p>
+                <p className="card-value">{spatialTelemetry.hormuz.index}</p>
+                <span className="source-tag">Congestion Index 0–100</span>
+              </button>
+              <button onClick={() => setSpatialChokepoint('bab')} className={`card ${spatialChokepoint === 'bab' ? 'active-card' : ''}`}>
+                <p className="card-label">Bab el-Mandeb</p>
+                <p className="card-value">{spatialTelemetry.bab.index}</p>
+                <span className="source-tag">Congestion Index 0–100</span>
+              </button>
+              <button onClick={() => setSpatialChokepoint('malacca')} className={`card ${spatialChokepoint === 'malacca' ? 'active-card' : ''}`}>
+                <p className="card-label">Malacca Strait</p>
+                <p className="card-value">{spatialTelemetry.malacca.index}</p>
+                <span className="source-tag">Congestion Index 0–100</span>
+              </button>
+            </div>
+
+            <div className="spatial-viewer-panel">
+              <div className="spatial-viewer-header">
+                <h3>SAM 3.1 Viewer — {spatialChokepoint === 'hormuz' ? 'Strait of Hormuz' : spatialChokepoint === 'bab' ? 'Bab el-Mandeb' : 'Malacca Strait'}</h3>
+                <span className="source-badge">Placeholder satellite tile · Replace with real imagery when available</span>
+              </div>
+              <div className="spatial-viewer-frame">
+                <img src={`/assets/satellite_chokepoints/${spatialChokepoint === 'hormuz' ? 'hormuz' : spatialChokepoint === 'bab' ? 'bab_el_mandeb' : 'malacca'}.png`} alt="SAM 3.1 satellite tile" className="satellite-tile" />
+                <div className="mask-overlay" style={{ borderColor: spatialTelemetry[spatialChokepoint].index > 70 ? '#f43f5e' : spatialTelemetry[spatialChokepoint].index > 40 ? '#f59e0b' : '#22c55e' }}>
+                  <span className="mask-label">Segment mask · {spatialTelemetry[spatialChokepoint].vessels} vessels · Latency risk {spatialTelemetry[spatialChokepoint].latency}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="telemetry-panel">
+              <h3>Spatial Telemetry — {spatialChokepoint === 'hormuz' ? 'Strait of Hormuz' : spatialChokepoint === 'bab' ? 'Bab el-Mandeb' : 'Malacca Strait'}</h3>
+              <div className="telemetry-grid">
+                <div><span>Spatial Congestion Index</span><strong>{spatialTelemetry[spatialChokepoint].index} / 100</strong></div>
+                <div><span>Estimated Vessel Count</span><strong>{spatialTelemetry[spatialChokepoint].vessels}</strong></div>
+                <div><span>Transit Latency Risk</span><strong>{spatialTelemetry[spatialChokepoint].latency}</strong></div>
+                <div><span>SAM 3.1 Token</span><strong>mock-token-{spatialChokepoint}</strong></div>
               </div>
             </div>
           </div>

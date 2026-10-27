@@ -276,7 +276,7 @@ def get_news_feed():
                 supabase.table("rss_news")
                 .select("*")
                 .order("created_at", desc=True)
-                .limit(RSS_HEADLINE_LIMIT)
+                .limit(100)
                 .execute()
             )
             data = response.data or []

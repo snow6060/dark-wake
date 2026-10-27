@@ -10,7 +10,7 @@ from html import unescape
 from src.database import ChokepointRecord, SessionLocal, init_db
 from src.supabase_client import supabase
 
-RSS_HEADLINE_LIMIT = 50
+RSS_HEADLINE_LIMIT = 100
 RSS_HEADLINE_PRUNE_BATCH_SIZE = 1000
 
 # Targeted commercial energy-market RSS feeds.
@@ -319,7 +319,7 @@ def _rss_entry_created_at(entry: dict) -> str:
 
 
 def _prune_rss_headlines() -> int:
-    """Keep only the 50 newest RSS headlines in Supabase."""
+    """Keep only the 100 newest RSS headlines in Supabase."""
     deleted_count = 0
     while True:
         response = (

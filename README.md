@@ -53,7 +53,21 @@ Dark Wake combines energy-market prices, commercial news, maritime-route telemet
 
 ### Desktop app
 
-Install Node.js, then from `dark-wake`:
+Install Node.js and Rust. On Windows, also install Visual Studio 2022 or
+Visual Studio Build Tools 2022 with the **Desktop development with C++**
+workload, including the MSVC C++ build tools and a Windows SDK. Rust's
+`*-pc-windows-msvc` target needs the MSVC linker (`link.exe`); VS Code alone
+does not provide it.
+
+After installation, open a new terminal (or use **Developer PowerShell for
+Visual Studio 2022**) so the compiler environment is available. If Cargo still
+reports that `link.exe` is missing, verify it in that terminal with:
+
+```powershell
+where.exe link
+```
+
+Then, from `dark-wake`:
 
 ```powershell
 npm install
@@ -61,6 +75,20 @@ npm run tauri dev
 ```
 
 For browser-only frontend development, use `npm run dev`. By default, the client connects to the local API at `http://localhost:8000`.
+
+#### Meta Model API disabled during development
+
+Meta Model API requests and Strategy Desk debate runs are hard-disabled in the
+backend while the project is under development. Starting the backend still
+allows other data ingestion and frontend testing, but it will not call the Meta
+Model API or automatically schedule a Strategy Desk run. The manual run
+endpoints also return an error while disabled; loading saved debate history is
+still available.
+
+When the project is complete and Meta Model API calls are intended, change
+`META_MODEL_API_ENABLED` from `False` to `True` in [`src/agents.py`](./src/agents.py).
+This enables Meta Model requests, manual debate runs, and the scheduled daily
+run. Keep it `False` during development and testing.
 
 ## Build and sign the Windows installer with SignPath
 

@@ -13,6 +13,7 @@ from src.database import ChokepointRecord, SessionLocal, TankerMapDailyRecord
 from src.ingestion import sanitize_energy_news
 from src.market_data import get_brent_market_snapshot
 from src.supabase_client import supabase
+from src.vision import get_spatial_telemetry
 from src.technicals import (
     format_commodity_technical_report,
     get_commodity_technical_indicators,
@@ -41,6 +42,7 @@ MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
 META_API_TIMEOUT_SECONDS = 60
 META_MODEL_API_URL = "https://api.meta.ai/v1"
+META_MODEL_API_ENABLED = False
 META_MODEL_FALLBACKS = (
     "meta-models/muse-spark-open",
     "llama-3.1-70b-instruct",
@@ -108,6 +110,12 @@ def _meta_model_interaction(
     model: str,
     max_tokens: int,
 ) -> str:
+    if not META_MODEL_API_ENABLED:
+        raise RuntimeError(
+            "Meta Model API calls are disabled during development. "
+            "Enable META_MODEL_API_ENABLED in src/agents.py when the project is complete."
+        )
+
     api_key = _meta_model_api_key()
     if not api_key:
         raise RuntimeError(
@@ -997,9 +1005,23 @@ def _format_strategy_desk_payload(analysis: dict[str, Any]) -> dict[str, Any]:
             "Market data and analysis are informational and not investment advice."
         ),
     ))
+    spatial = context.get("spatial_telemetry") or {}
     return {
         **analysis,
         "broadcast_summary": broadcast_summary,
+        "broadcast_script": f"60-second broadcast: Brent at ${float(context['price']):.2f}, desk signal {action['signal'] or 'HOLD'}. Spatial congestion index {spatial.get('spatial_congestion_index', 'N/A')}.",
+        "thumbnail_prompt": f"High-contrast energy market chart with chokepoint map overlay, {action['signal']} visual motif, spatial index {spatial.get('spatial_congestion_index', 'N/A')}, dark terminal theme.",
+        "youtube_metadata": {
+            "title": f"Dark Wake Strategy Desk — {action['signal'] or 'HOLD'} | Brent ${float(context['price']):.2f}",
+            "description": f"Energy market analysis: Brent ${float(context['price']):.2f}, signal {action['signal']}, spatial congestion {spatial.get('spatial_congestion_index', 'N/A')}, vessel count {spatial.get('estimated_vessel_count', 'N/A')}.",
+            "tags": ["Energy Markets", "Brent Crude", "Strategy Desk", "Maritime Supply", "SAM 3.1 Vision", "Spatial Intelligence"],
+        },
+        "spatial_congestion": {
+            "chokepoint": spatial.get("chokepoint") or "Strait of Hormuz",
+            "congestion_index": spatial.get("spatial_congestion_index"),
+            "estimated_vessel_count": spatial.get("estimated_vessel_count"),
+            "mask_reference": spatial.get("mask_reference"),
+        },
         "brent_price": brent_price,
         "commodity_basket_summary": basket_summary,
         "desk_action": action,
@@ -1026,7 +1048,7 @@ def run_agent_pipeline() -> dict[str, Any]:
     agent_accuracy = _load_agent_accuracy()
     previous_debates = _summarize_previous_debate(_load_previous_debates())
     initial_state: DebateState = {
-        "market_context": market_context,
+        "market_context": _inject_spatial_telemetry(market_context, "Strait of Hormuz"),
         "previous_debates": previous_debates,
         "agent_accuracy": agent_accuracy,
         "initial_technical": "",
@@ -1096,28 +1118,12 @@ def _debate_created_at(debate: dict[str, Any]) -> datetime | None:
     return created.astimezone(timezone.utc)
 
 
-def run_debate_if_due() -> dict[str, Any]:
-    """Reuse today's latest analysis; otherwise generate and persist a fresh one."""
-    with _daily_debate_lock:
-        now = datetime.now(timezone.utc)
-        recent = get_recent_debates(limit=1)
-        if recent:
-            created_at = _debate_created_at(recent[0])
-            if created_at and now - created_at < DEBATE_REFRESH_INTERVAL:
-                return _format_strategy_desk_payload(recent[0])
-        return run_agent_pipeline()
+def _inject_spatial_telemetry(state: dict[str, Any], chokepoint: str = "Strait of Hormuz") -> dict[str, Any]:
+    telemetry = get_spatial_telemetry(chokepoint)
+    state.setdefault("market_context", {})
+    state["market_context"]["spatial_congestion_index"] = telemetry.get("spatial_congestion_index")
+    state["market_context"]["spatial_telemetry"] = telemetry
+    return state
 
 
-def get_recent_debates(limit: int = 10) -> list[dict[str, Any]]:
-    if not supabase:
-        raise RuntimeError("Supabase must be configured to load Strategy Desk analysis history.")
-    try:
-        return [
-            _format_strategy_desk_payload(row)
-            for row in _fetch_recent_rows("war_room_debates", "created_at", limit)
-        ]
-    except Exception as exc:
-        raise RuntimeError(
-            "Strategy Desk history is unavailable. Run the provided war_room_debates SQL in Supabase. "
-            f"Details: {exc}"
-        ) from exc
+
