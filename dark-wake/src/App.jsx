@@ -501,6 +501,16 @@ export default function App() {
                 <p className="card-value">{spatialTelemetry.malacca.index}</p>
                 <span className="source-tag">Congestion Index 0–100</span>
               </button>
+              <button onClick={() => setSpatialChokepoint('fujairah')} className={`card ${spatialChokepoint === 'fujairah' ? 'active-card' : ''}`}>
+                <p className="card-label">Port of Fujairah</p>
+                <p className="card-value">—</p>
+                <span className="source-tag">Dock telemetry</span>
+              </button>
+              <button onClick={() => setSpatialChokepoint('suez')} className={`card ${spatialChokepoint === 'suez' ? 'active-card' : ''}`}>
+                <p className="card-label">Suez Canal</p>
+                <p className="card-value">—</p>
+                <span className="source-tag">Canal telemetry</span>
+              </button>
             </div>
 
             <div className="spatial-snapshots-panel">
@@ -513,16 +523,16 @@ export default function App() {
               </div>
               {snapshotsLoading ? (
                 <div className="snapshot-grid"><p className="no-data-msg">Loading satellite snapshots…</p></div>
-              ) : snapshots.length === 0 ? (
+              ) : (spatialSnapshots || []).length === 0 ? (
                 <div className="snapshot-grid"><p className="no-data-msg">No satellite snapshots loaded yet.</p></div>
               ) : (
                 <div className="snapshot-grid">
-                  {snapshots.map((snap, i) => (
-                    <div key={snap.id || i} className="snapshot-card">
-                      <img src={snap.image_url} alt={snap.location_name} className="snapshot-img" />
+                  {(spatialSnapshots || []).map((snap, i) => (
+                    <div key={snap?.id || i} className="snapshot-card">
+                      <img src={snap?.image_url || '/assets/satellite_chokepoints/hormuz.png'} alt={snap?.location_name || 'snapshot'} className="snapshot-img" />
                       <div className="snapshot-meta">
-                        <strong>{snap.location_name}</strong>
-                        <span>{snap.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>
+                        <strong>{snap?.location_name || 'Unknown'}</strong>
+                        <span>{snap?.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>
                       </div>
                     </div>
                   ))}
@@ -540,24 +550,6 @@ export default function App() {
               </div>
             </div>
 
-            <div className="spatial-snapshots-panel">
-              <h3>Satellite Snapshots — 3-Day Rolling Window</h3>
-              <div className="snapshot-grid">
-                {spatialSnapshots?.length === 0 ? (
-                  <div className="fallback-card"><p className="no-data-msg">No satellite snapshots loaded yet.</p><img src="/assets/satellite_chokepoints/hormuz.png" alt="fallback" className="snapshot-img" /></div>
-                ) : (
-                  (spatialSnapshots || []).map((snap, i) => (
-                    <div key={snap?.id || i} className="snapshot-card">
-                      <img src={snap?.image_url || '/assets/satellite_chokepoints/hormuz.png'} alt={snap?.location_name || 'snapshot'} className="snapshot-img" />
-                      <div className="snapshot-meta">
-                        <strong>{snap?.location_name || 'Unknown'}</strong>
-                        <span>{snap?.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-            </div>
           </div>
         )}
 
