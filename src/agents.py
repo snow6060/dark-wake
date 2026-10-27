@@ -43,6 +43,12 @@ MODEL_RETRY_DELAY_SECONDS = 3
 META_API_TIMEOUT_SECONDS = 60
 META_MODEL_API_URL = "https://api.meta.ai/v1"
 META_MODEL_API_ENABLED = False
+
+def run_debate_if_due(*args, **kwargs):
+    import logging
+    logging.warning("run_debate_if_due called but debates are hardcoded off (META_MODEL_API_ENABLED=False). No debate executed.")
+    return None
+
 META_MODEL_FALLBACKS = (
     "meta-models/muse-spark-open",
     "llama-3.1-70b-instruct",
