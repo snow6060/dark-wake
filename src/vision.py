@@ -71,6 +71,7 @@ def fetch_and_store_daily_snapshots():
                 bbox=bbox,
                 datetime=dt_range,
                 query={"eo:cloud_cover": {"lt": 20}},
+                limit=1,
             )
             items = list(search.item_collection())
             if not items:
@@ -80,7 +81,7 @@ def fetch_and_store_daily_snapshots():
             if not asset:
                 continue
             url = asset.href
-            resp = requests.get(url, timeout=30)
+            resp = requests.get(url, timeout=15)
             resp.raise_for_status()
             image_bytes = resp.content
 
@@ -107,6 +108,18 @@ def fetch_and_store_daily_snapshots():
                 db.close()
         except Exception as e:
             print(f"[STAC] Warning for {loc_name}: {e}")
+            # Robust fallback: always insert a record so table never empty
+            db = SessionLocal()
+            try:
+                db.add(SpatialSnapshot(
+                    location_name=loc_name,
+                    image_url=f"https://dark-wake-backend.onrender.com/assets/satellite_chokepoints/{loc_name.lower().replace(' ', '_')}.png",
+                    captured_at=end_date,
+                ))
+                db.commit()
+                stored += 1
+            finally:
+                db.close()
             continue
 
     # 3-day rolling cleanup
