@@ -106,8 +106,9 @@ def get_spatial_snapshots():
                     "id": r.id,
                     "location_name": r.location_name,
                     "image_url": r.image_url,
-                    "captured_at": r.captured_at.isoformat() if r.captured_at else None,
-                }
+                "fallback_url": r.fallback_url,
+                "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+            }
                 for r in rows
             ],
             "rolling_window_days": 3,

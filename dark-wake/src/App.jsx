@@ -529,7 +529,7 @@ export default function App() {
                 <div className="snapshot-grid">
                   {(spatialSnapshots || []).map((snap, i) => (
                     <div key={snap?.id || i} className="snapshot-card">
-                      <img src={snap?.image_url || '/assets/satellite_chokepoints/hormuz.png'} alt={snap?.location_name || 'snapshot'} className="snapshot-img" />
+                      <img src={snap?.image_url || '/assets/satellite_chokepoints/hormuz.png'} alt={snap?.location_name || 'snapshot'} className="snapshot-img" onError={(e) => { e.target.src = snap?.fallback_url || '/assets/satellite_chokepoints/hormuz.png'; }} />
                       <div className="snapshot-meta">
                         <strong>{snap?.location_name || 'Unknown'}</strong>
                         <span>{snap?.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>

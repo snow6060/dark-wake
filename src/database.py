@@ -14,6 +14,7 @@ class SpatialSnapshot(Base):
     id = Column(Integer, primary_key=True, index=True)
     location_name = Column(String, nullable=False)
     image_url = Column(String, nullable=False)
+    fallback_url = Column(String, nullable=True)
     captured_at = Column(DateTime, nullable=False)
 
 

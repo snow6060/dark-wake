@@ -83,14 +83,27 @@ def fetch_and_store_daily_snapshots():
             url = asset.href
             # Signed STAC URL (planetary_computer.sign_inplace) — direct cloud asset, no heavy download
 
-            # Direct signed STAC URL — no mock/broken Supabase upload needed
-            public_url = url
+            url = asset.href
+            # Hybrid: try lightweight preview download (5s) for Supabase bucket
+            bucket_url = f"/assets/satellite_chokepoints/{loc_name.lower().replace(' ', '_')}.png"
+            try:
+                resp = requests.get(url, timeout=5)
+                if resp.status_code == 200:
+                    from src.supabase_client import supabase
+                    if supabase:
+                        filename = f"{loc_name.lower().replace(' ', '_')}_{end_date.strftime('%Y%m%d_%H%M')}.png"
+                        # Upload to satellite-snapshots bucket (open — no Meta)
+                        supabase.storage.from_("satellite-snapshots").upload(filename, resp.content)
+                        bucket_url = f"https://your-project.supabase.co/storage/v1/object/public/satellite-snapshots/{filename}"
+            except Exception:
+                pass  # fallback to static asset path
 
             db = SessionLocal()
             try:
                 db.add(SpatialSnapshot(
                     location_name=loc_name,
-                    image_url=public_url,
+                    image_url=url,
+                    fallback_url=bucket_url,
                     captured_at=end_date,
                 ))
                 db.commit()
