@@ -29,11 +29,11 @@ FALLBACK_ASSETS = {
     "Strait of Hormuz": "/assets/satellite_chokepoints/hormuz.png",
     "Bab el-Mandeb": "/assets/satellite_chokepoints/bab_el_mandeb.png",
     "Malacca Strait": "/assets/satellite_chokepoints/malacca.png",
-    "Port of Fujairah": "/assets/satellite_chokepoints/hormuz.png",
-    "Suez Canal": "/assets/satellite_chokepoints/bab_el_mandeb.png",
-    "Port of Singapore": "/assets/satellite_chokepoints/malacca.png",
-    "Port of Rotterdam": "/assets/satellite_chokepoints/hormuz.png",
-    "Port of Jebel Ali": "/assets/satellite_chokepoints/hormuz.png",
+    "Port of Fujairah": "/assets/satellite_chokepoints/fujairah.png",
+    "Suez Canal": "/assets/satellite_chokepoints/suez.png",
+    "Port of Singapore": "/assets/satellite_chokepoints/singapore.png",
+    "Port of Rotterdam": "/assets/satellite_chokepoints/rotterdam.png",
+    "Port of Jebel Ali": "/assets/satellite_chokepoints/jebel_ali.png",
 }
 
 CHOKEPOINTS = [
@@ -76,34 +76,42 @@ def _query_stac(bbox: list, dt_range: str) -> dict | None:
     """
     collections_to_try = ["sentinel-2-c1-l2a", "sentinel-2-l2a"]
     for collection in collections_to_try:
-        payload = {
-            "collections": [collection],
-            "bbox": bbox,
-            "datetime": dt_range,
-            "query": {"eo:cloud_cover": {"lt": 25}},
-            "limit": 1,
-            "sortby": [{"field": "properties.datetime", "direction": "desc"}],
-        }
-        try:
-            resp = requests.post(STAC_SEARCH_URL, json=payload, timeout=15)
-            resp.raise_for_status()
-            data = resp.json()
-            features = data.get("features", [])
-            if features:
-                return features[0]
-        except Exception as exc:
-            print(f"[STAC] Collection '{collection}' query failed: {exc}")
-            continue
+        # Try with cloud cover filter first, then without if cloudy period
+        for query_filter in [{"eo:cloud_cover": {"lt": 35}}, None]:
+            payload = {
+                "collections": [collection],
+                "bbox": bbox,
+                "datetime": dt_range,
+                "limit": 1,
+                "sortby": [{"field": "properties.datetime", "direction": "desc"}],
+            }
+            if query_filter:
+                payload["query"] = query_filter
+
+            try:
+                resp = requests.post(STAC_SEARCH_URL, json=payload, timeout=12)
+                if not resp.ok:
+                    continue
+                data = resp.json()
+                features = data.get("features", [])
+                if features:
+                    return features[0]
+            except Exception as exc:
+                print(f"[STAC] Collection '{collection}' query failed: {exc}")
+                continue
     return None
 
 
 def _extract_thumbnail_url(feature: dict) -> str | None:
-    """Extract the best thumbnail/preview URL from a STAC feature."""
+    """Extract browser-compatible preview/thumbnail URL (JPEG/PNG) from STAC feature."""
     assets = feature.get("assets", {})
-    for key in ("thumbnail", "rendered_preview", "visual"):
+    # Prioritize web-compatible image formats (JPEG/PNG), avoid TIFF
+    for key in ("thumbnail", "preview", "rendered_preview"):
         asset = assets.get(key)
         if asset and asset.get("href"):
-            return asset["href"]
+            href = asset["href"]
+            if not href.endswith(".tif") and not href.endswith(".tiff"):
+                return href
     return None
 
 
@@ -112,66 +120,74 @@ def fetch_and_store_daily_snapshots():
     from src.supabase_client import supabase
     from src.database import SessionLocal, SpatialSnapshot
 
-    supabase_url = os.getenv("SUPABASE_URL", "")
-
     end_date = datetime.now(timezone.utc)
-    start_date = end_date - timedelta(days=7)
-    dt_range = f"{start_date.strftime('%Y-%m-%d')}/{end_date.strftime('%Y-%m-%d')}"
+    start_date = end_date - timedelta(days=30)
+    # STAC specification requires RFC3339 formatted datetimes (YYYY-MM-DDTHH:MM:SSZ)
+    dt_range = f"{start_date.strftime('%Y-%m-%dT00:00:00Z')}/{end_date.strftime('%Y-%m-%dT23:59:59Z')}"
 
     stored = 0
     for loc_name, bbox in LOCATION_BBOXES.items():
         fallback_url = FALLBACK_ASSETS.get(loc_name, "/assets/satellite_chokepoints/hormuz.png")
+        capture_time = end_date
         try:
             feature = _query_stac(bbox, dt_range)
             if not feature:
-                print(f"[STAC] No results for {loc_name}, inserting fallback.")
+                print(f"[STAC] No satellite tiles in window for {loc_name}, using benchmark asset.")
                 _insert_fallback(SessionLocal, SpatialSnapshot, loc_name, fallback_url, end_date)
                 stored += 1
                 continue
 
             thumbnail_url = _extract_thumbnail_url(feature)
             if not thumbnail_url:
-                print(f"[STAC] No thumbnail asset for {loc_name}, inserting fallback.")
+                print(f"[STAC] No JPEG preview found for {loc_name}, using benchmark asset.")
                 _insert_fallback(SessionLocal, SpatialSnapshot, loc_name, fallback_url, end_date)
                 stored += 1
                 continue
 
-            # Try to download the thumbnail and upload to Supabase storage
-            image_url = thumbnail_url  # default: direct STAC URL
-            try:
-                img_resp = requests.get(thumbnail_url, timeout=10)
-                img_resp.raise_for_status()
-                image_bytes = img_resp.content
+            # Parse satellite scene capture timestamp if available
+            raw_datetime = feature.get("properties", {}).get("datetime")
+            if raw_datetime:
+                try:
+                    capture_time = datetime.fromisoformat(raw_datetime.replace("Z", "+00:00"))
+                except Exception:
+                    capture_time = end_date
 
-                if supabase and supabase_url:
-                    filename = f"{loc_name.lower().replace(' ', '_')}_{end_date.strftime('%Y%m%d_%H%M')}.png"
-                    try:
-                        supabase.storage.from_("satellite-snapshots").upload(
-                            filename,
-                            image_bytes,
-                            {"content-type": "image/png"},
-                        )
-                        image_url = f"{supabase_url}/storage/v1/object/public/satellite-snapshots/{filename}"
-                        print(f"[STAC] Uploaded {filename} to Supabase storage.")
-                    except Exception as upload_err:
-                        print(f"[STAC] Supabase upload failed for {loc_name}: {upload_err}")
-                        # Keep image_url as the direct STAC thumbnail URL
+            image_url = thumbnail_url  # default to direct public S3 preview URL
+
+            # Download thumbnail and upload to Supabase storage bucket
+            try:
+                img_resp = requests.get(thumbnail_url, timeout=12)
+                if img_resp.status_code == 200 and len(img_resp.content) > 100:
+                    image_bytes = img_resp.content
+                    if supabase:
+                        clean_loc = loc_name.lower().replace(" ", "_").replace("/", "_")
+                        filename = f"{clean_loc}_{capture_time.strftime('%Y%m%d_%H%M')}.jpg"
+                        try:
+                            supabase.storage.from_("satellite-snapshots").upload(
+                                filename,
+                                image_bytes,
+                                {"content-type": "image/jpeg", "upsert": "true"},
+                            )
+                            image_url = supabase.storage.from_("satellite-snapshots").get_public_url(filename)
+                            print(f"[STAC] Uploaded {filename} to Supabase bucket.")
+                        except Exception as upload_err:
+                            print(f"[STAC] Supabase upload failed for {loc_name}: {upload_err}")
+                            # image_url remains thumbnail_url (direct public AWS S3 URL)
             except Exception as dl_err:
                 print(f"[STAC] Thumbnail download failed for {loc_name}: {dl_err}")
-                # Keep image_url as the direct STAC thumbnail URL
 
-            # Persist to local DB
+            # Persist record to local SQLite table
             db = SessionLocal()
             try:
                 db.add(SpatialSnapshot(
                     location_name=loc_name,
                     image_url=image_url,
                     fallback_url=fallback_url,
-                    captured_at=end_date,
+                    captured_at=capture_time,
                 ))
                 db.commit()
                 stored += 1
-                print(f"[STAC] Stored snapshot for {loc_name}.")
+                print(f"[STAC] Stored snapshot for {loc_name} ({capture_time.strftime('%Y-%m-%d %H:%M')}).")
             finally:
                 db.close()
 
@@ -180,7 +196,7 @@ def fetch_and_store_daily_snapshots():
             _insert_fallback(SessionLocal, SpatialSnapshot, loc_name, fallback_url, end_date)
             stored += 1
 
-    # 3-day rolling cleanup
+    # 3-day rolling cleanup (keep snapshots within 3 days of most recent capture)
     db = SessionLocal()
     try:
         cutoff = end_date - timedelta(days=3)
