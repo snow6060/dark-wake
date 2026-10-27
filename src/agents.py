@@ -50,8 +50,25 @@ def run_debate_if_due(*args, **kwargs):
     return None
 
 def get_recent_debates():
-    import logging
-    logging.warning("get_recent_debates called but debates are hardcoded off (META_MODEL_API_ENABLED=False). Returning empty list.")
+    try:
+        # Query saved debates from Supabase (war_room_debates table)
+        if supabase:
+            result = supabase.table("war_room_debates").select("*").order("created_at", desc=True).limit(10).execute()
+            rows = result.data or []
+            return [
+                {
+                    "id": row.get("id"),
+                    "created_at": row.get("created_at"),
+                    "signal": row.get("signal"),
+                    "verdict": row.get("verdict"),
+                    "transcript": row.get("transcript"),
+                    "market_context": row.get("market_context"),
+                }
+                for row in rows
+            ]
+    except Exception as exc:
+        import logging
+        logging.warning("Supabase debate query failed (%s); falling back to empty list.", exc)
     return []
 
 META_MODEL_FALLBACKS = (

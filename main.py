@@ -85,124 +85,54 @@ def health_check():
 
 @app.get("/api/chokepoints")
 def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
-    portwatch_query = db.query(ChokepointRecord)
-    tankermap_query = db.query(TankerMapDailyRecord)
+    # Straits.live is the sole live telemetry source; PortWatch/TankerMap deprecated
+    try:
+        live_result = fetch_straits_live_chokepoint_data()
+    except Exception as exc:
+        live_result = {"status": "error", "message": str(exc)}
+    # Build historical array from local chokepoint_telemetry DB for chart rendering
+    telemetry_query = db.query(ChokepointTelemetry)
     if chokepoint_name:
-        portwatch_query = portwatch_query.filter(
-            ChokepointRecord.chokepoint_name.like(f"%{chokepoint_name}%")
+        telemetry_query = telemetry_query.filter(
+            ChokepointTelemetry.chokepoint_name.like(f"%{chokepoint_name}%")
         )
-        tankermap_query = tankermap_query.filter(
-            TankerMapDailyRecord.chokepoint_name.like(f"%{chokepoint_name}%")
-        )
-    portwatch_records = portwatch_query.order_by(ChokepointRecord.date.desc()).all()
-    tankermap_records = tankermap_query.order_by(TankerMapDailyRecord.date.desc()).all()
-
-    portwatch_by_name = {}
-    for record in portwatch_records:
-        portwatch_by_name.setdefault(record.chokepoint_name, []).append(record)
-    tankermap_by_name = {}
-    for record in tankermap_records:
-        tankermap_by_name.setdefault(record.chokepoint_name, []).append(record)
-    selected_records = []
-    for name in set(portwatch_by_name) | set(tankermap_by_name):
-        portwatch_latest = portwatch_by_name.get(name, [])
-        tankermap_latest = tankermap_by_name.get(name, [])
-        if tankermap_latest and (
-            not portwatch_latest or tankermap_latest[0].date >= portwatch_latest[0].date
-        ):
-            selected_records.extend(
-                (record, "TankerMap") for record in tankermap_latest
-            )
-        else:
-            selected_records.extend(
-                (record, "IMF PortWatch") for record in portwatch_latest
-            )
-    selected_records.sort(key=lambda item: item[0].date, reverse=True)
-
+    telemetry_rows = telemetry_query.order_by(ChokepointTelemetry.date.desc()).limit(90).all()
+    historical = [
+        {
+            "date": str(row.date),
+            "chokepoint": row.chokepoint_name,
+            "tankers": row.tankers,
+            "estimated_oil_flow": row.estimated_oil_flow,
+            "source": row.source or "straits.live",
+        }
+        for row in telemetry_rows
+    ]
+    # Live snapshot from DB (straits.live feed)
     live_query = db.query(LiveChokepointSnapshot)
     if chokepoint_name:
         live_query = live_query.filter(
             LiveChokepointSnapshot.chokepoint_name.like(f"%{chokepoint_name}%")
         )
     now = datetime.now(timezone.utc)
-    max_age_by_source = {
-        "Straits.live": STRAITS_LIVE_MAX_AGE,
-        "TankerMap": TANKERMAP_LIVE_MAX_AGE,
-    }
-    live_snapshots = {
-        snapshot.chokepoint_name: {
+    live_snapshots = {}
+    for snapshot in live_query.all():
+        live_snapshots[snapshot.chokepoint_name] = {
             "vessels_observed": snapshot.vessels_observed,
             "tankers_identified": snapshot.tankers_identified,
             "vessels_classified": snapshot.vessels_classified,
-            "observed_at": snapshot.snapshot_at.replace(tzinfo=timezone.utc).isoformat(),
-            "capture_seconds": snapshot.capture_seconds,
-            "source": snapshot.source,
-            "fresh": (
-                now - snapshot.snapshot_at.replace(tzinfo=timezone.utc)
-                <= max_age_by_source.get(snapshot.source, timedelta(0))
-            ),
+            "observed_at": snapshot.snapshot_at.replace(tzinfo=timezone.utc).isoformat() if snapshot.snapshot_at else None,
+            "source": snapshot.source or "straits.live",
+            "fresh": (now - snapshot.snapshot_at.replace(tzinfo=timezone.utc) <= timedelta(hours=2)) if snapshot.snapshot_at else False,
         }
-        for snapshot in live_query.all()
-    }
-    
-    if not selected_records:
-        return {
-            "data": [],
-            "source": "TankerMap / IMF PortWatch",
-            "live": live_snapshots,
-            "message": "No chokepoint records are available yet.",
-        }
-
-    sources = sorted({source for _, source in selected_records})
-    latest_dates = [record.date for record, _ in selected_records]
     return {
-        "count": len(selected_records),
-        "source": sources[0] if len(sources) == 1 else "Multiple sources",
+        "count": len(historical),
+        "source": "straits.live",
         "live": live_snapshots,
-        "data_as_of": str(max(latest_dates)),
-        "portwatch_data_as_of": (
-            str(max(record.date for record in portwatch_records))
-            if portwatch_records
-            else None
-        ),
-        "data": [
-            (
-                {
-                    "date": str(record.date),
-                    "chokepoint": record.chokepoint_name,
-                    "total_vessels": None,
-                    "tankers": record.vessel_count_total,
-                    "total_tanker_transits": record.vessel_count_total,
-                    "containers": None,
-                    "capacity_tanker": None,
-                    "estimated_oil_flow_million_bbl": None,
-                    "tanker_breakdown": {
-                        "lng": record.vessel_count_lng,
-                        "crude": record.vessel_count_crude,
-                        "product": record.vessel_count_product,
-                    },
-                    "baseline_avg": None,
-                    "deviation_pct": None,
-                    "source": source,
-                }
-                if source == "TankerMap"
-                else {
-                    "date": str(record.date),
-                    "chokepoint": record.chokepoint_name,
-                    "total_vessels": record.vessel_count_total,
-                    "tankers": record.vessel_count_tanker,
-                    "containers": record.vessel_count_container,
-                    "capacity_tanker": record.capacity_tanker,
-                    "estimated_oil_flow_million_bbl": (
-                        record.capacity_tanker * 7.33 / 1_000_000
-                    ) if record.capacity_tanker is not None else None,
-                    "baseline_avg": record.baseline_avg,
-                    "deviation_pct": record.deviation_pct,
-                    "source": source,
-                }
-            )
-            for record, source in selected_records
-        ]
+        "data_as_of": str(historical[0]["date"]) if historical else None,
+        "data": historical,
+        "straits_live_status": live_result.get("verdict_status"),
+        "straits_live_transits_ma7": live_result.get("transits_ma7"),
+        "message": "Telemetry from straits.live feed" if historical else "No telemetry available yet.",
     }
 
 @app.post("/api/ingest-trigger")
