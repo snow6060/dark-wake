@@ -200,6 +200,40 @@ def _prepare_portwatch_records(features: list[dict]) -> list[dict]:
     return records
 
 
+STRAITS_LIVE_STATUS_URL = "https://straits.live/status"
+STRAITS_LIVE_HEADERS = {"User-Agent": "dark-wake/0.2.1 (energy-intel; +https://github.com/snow6060/dark-wake)"}
+
+
+def fetch_straits_live_chokepoint_data() -> dict:
+    """Ingest real-time chokepoint telemetry from straits.live (keyless)."""
+    try:
+        resp = requests.get(STRAITS_LIVE_STATUS_URL, headers=STRAITS_LIVE_HEADERS, timeout=10)
+        resp.raise_for_status()
+        payload = resp.json()
+        verdict = payload.get("verdict") or {}
+        result = {
+            "status": "success",
+            "source": "straits.live",
+            "verdict_status": verdict.get("status"),
+            "verdict_short": verdict.get("short"),
+            "transits_ma7": payload.get("transits_ma7"),
+            "ais_dark_tankers": payload.get("ais_dark_tankers"),
+            "ships_stranded": payload.get("ships_stranded"),
+            "ships_stranded_offshore": payload.get("ships_stranded_offshore"),
+            "brent_usd": payload.get("brent_usd"),
+            "wti_usd": payload.get("wti_usd"),
+        }
+        return result
+    except Exception as exc:
+        import logging
+        logging.warning("straits.live unavailable (%s); falling back to IMF PortWatch.", exc)
+        try:
+            return fetch_imf_chokepoint_data()
+        except Exception as fallback_exc:
+            logging.warning("PortWatch fallback also failed (%s).", fallback_exc)
+            return {"status": "error", "source": "straits.live+PortWatch", "message": str(exc)}
+
+
 def fetch_imf_chokepoint_data():
     """Fetch real IMF PortWatch telemetry and persist it to local SQLite."""
     start_date = datetime.now(timezone.utc).date() - timedelta(days=89)
