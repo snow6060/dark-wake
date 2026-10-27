@@ -63,8 +63,6 @@ export default function App() {
     bab: { index: 38, vessels: 31, latency: 'Low' },
     malacca: { index: 71, vessels: 58, latency: 'High' },
   });
-  const [spatialSnapshots, setSpatialSnapshots] = useState([]);
-
   const [priceHistory, setPriceHistory] = useState([
     { time: '2:00 AM', price: 100.50 },
     { time: '4:00 AM', price: 100.80 },
