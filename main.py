@@ -3,7 +3,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta, timezone
@@ -67,6 +68,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+if os.path.isdir("assets"):
+    app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+
+
 def get_db():
     db = SessionLocal()
     try:
@@ -99,7 +104,7 @@ def get_spatial_snapshots():
     from src.database import SessionLocal, SpatialSnapshot
     db = SessionLocal()
     try:
-        rows = db.query(SpatialSnapshot).order_by(SpatialSnapshot.captured_at.desc()).limit(12).all()
+        rows = db.query(SpatialSnapshot).order_by(SpatialSnapshot.captured_at.desc()).limit(60).all()
         return {
             "snapshots": [
                 {
@@ -112,7 +117,7 @@ def get_spatial_snapshots():
                 for r in rows
             ],
             "rolling_window_days": 3,
-            "source": "straits.live / satellite-snapshots",
+            "source": "Sentinel-2 L2A / AWS Earth Search STAC",
         }
     finally:
         db.close()

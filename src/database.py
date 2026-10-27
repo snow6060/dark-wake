@@ -89,6 +89,16 @@ def init_db():
             connection.execute(
                 text("ALTER TABLE chokepoint_live_snapshot ADD COLUMN active_window_minutes INTEGER")
             )
+    if inspect(engine).has_table("spatial_snapshots"):
+        spatial_columns = {
+            column["name"]
+            for column in inspect(engine).get_columns("spatial_snapshots")
+        }
+        if "fallback_url" not in spatial_columns:
+            with engine.begin() as connection:
+                connection.execute(
+                    text("ALTER TABLE spatial_snapshots ADD COLUMN fallback_url VARCHAR")
+                )
     with engine.begin() as connection:
         connection.execute(
             text("DELETE FROM chokepoint_live_snapshot WHERE source = 'AISStream'")

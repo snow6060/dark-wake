@@ -1161,3 +1161,552 @@ body {
   .debate-phase { font-size: 0.48rem; }
   .war-room-disclaimer { text-align: left; line-height: 1.5; }
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   SPATIAL INTELLIGENCE & SATELLITE TELEMETRY TAB (TAB 3)
+   ══════════════════════════════════════════════════════════════════ */
+
+.spatial-tab {
+  --spatial-cyan: #38bdf8;
+  --spatial-green: #34d399;
+  --spatial-amber: #fbbf24;
+  --spatial-red: #f43f5e;
+  --spatial-bg: #090e17;
+  --spatial-panel: #0d1522;
+  --spatial-border: rgba(56, 189, 248, 0.16);
+  font-family: 'Cascadia Code', 'SFMono-Regular', Consolas, monospace;
+}
+
+.spatial-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 4px 18px;
+  border-bottom: 1px solid var(--spatial-border);
+  gap: 16px;
+}
+
+.spatial-header h2 {
+  font: 700 clamp(1.3rem, 2.5vw, 1.9rem) 'Segoe UI', sans-serif;
+  color: #f1ffff;
+  letter-spacing: -0.035em;
+  text-transform: uppercase;
+}
+
+.spatial-header h2 span {
+  color: var(--spatial-cyan);
+}
+
+.spatial-header-sub {
+  color: #8da5aa;
+  font-size: 0.72rem;
+  margin-top: 4px;
+}
+
+.spatial-source-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 999px;
+  background: rgba(56, 189, 248, 0.08);
+  color: #bfe7fb;
+  font-size: 0.7rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.spatial-live-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--spatial-green);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.8);
+}
+
+/* ─── Chokepoint Telemetry Cards & Grid ─── */
+.spatial-grid-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.spatial-card-btn {
+  background: linear-gradient(145deg, rgba(13, 21, 34, 0.95), rgba(8, 14, 23, 0.95));
+  border: 1px solid var(--spatial-border);
+  border-radius: 10px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.22s ease-in-out;
+  position: relative;
+  overflow: hidden;
+  color: inherit;
+  font: inherit;
+}
+
+.spatial-card-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: transparent;
+  transition: background 0.2s ease;
+}
+
+.spatial-card-btn:hover {
+  border-color: rgba(56, 189, 248, 0.4);
+  transform: translateY(-2px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.spatial-card-btn.active-card {
+  border-color: var(--spatial-cyan);
+  background: linear-gradient(145deg, rgba(16, 29, 48, 0.98), rgba(10, 18, 30, 0.98));
+  box-shadow: 0 0 24px rgba(56, 189, 248, 0.16), inset 0 0 16px rgba(56, 189, 248, 0.05);
+}
+
+.spatial-card-btn.active-card::before {
+  background: linear-gradient(90deg, var(--spatial-cyan), var(--spatial-green));
+}
+
+.spatial-card-topline {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.spatial-card-name {
+  font-size: 0.85rem;
+  font-weight: 650;
+  color: #f1f8fc;
+  font-family: 'Segoe UI', sans-serif;
+  line-height: 1.25;
+}
+
+.spatial-card-badge {
+  font-size: 0.55rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  padding: 2px 6px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.spatial-card-badge.chokepoint {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fb7185;
+  border: 1px solid rgba(244, 63, 94, 0.3);
+}
+
+.spatial-card-badge.dock {
+  background: rgba(56, 189, 248, 0.18);
+  color: #7dd3fc;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.spatial-card-badge.canal {
+  background: rgba(251, 191, 36, 0.18);
+  color: #fcd34d;
+  border: 1px solid rgba(251, 191, 36, 0.3);
+}
+
+.spatial-card-main-val {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 6px 0 4px;
+}
+
+.spatial-card-index {
+  font-size: 1.7rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.spatial-card-index.low { color: var(--spatial-green); text-shadow: 0 0 14px rgba(52, 211, 153, 0.4); }
+.spatial-card-index.medium { color: var(--spatial-amber); text-shadow: 0 0 14px rgba(251, 191, 36, 0.4); }
+.spatial-card-index.high { color: var(--spatial-red); text-shadow: 0 0 14px rgba(244, 63, 94, 0.4); }
+
+.spatial-card-index-scale {
+  font-size: 0.65rem;
+  color: #71849a;
+  letter-spacing: 0.04em;
+}
+
+.spatial-card-stats {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.68rem;
+  color: #8da4b8;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.spatial-risk-pill {
+  font-size: 0.58rem;
+  font-weight: 700;
+  padding: 2px 7px;
+  border-radius: 4px;
+  letter-spacing: 0.04em;
+}
+
+.spatial-risk-pill.low { background: rgba(52, 211, 153, 0.15); color: var(--spatial-green); }
+.spatial-risk-pill.medium { background: rgba(251, 191, 36, 0.15); color: var(--spatial-amber); }
+.spatial-risk-pill.high { background: rgba(244, 63, 94, 0.15); color: var(--spatial-red); }
+
+.spatial-token-tag {
+  font-size: 0.56rem;
+  color: #556b82;
+  margin-top: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* ─── Main Content Grid (Viewer + Telemetry) ─── */
+.spatial-main-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.95fr);
+  gap: 18px;
+  margin-top: 20px;
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .spatial-main-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── Satellite Snapshot Viewer ─── */
+.spatial-viewer-box {
+  border: 1px solid var(--spatial-border);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(13, 21, 34, 0.98), rgba(7, 13, 22, 0.98));
+  overflow: hidden;
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
+}
+
+.spatial-viewer-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.12);
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.spatial-viewer-title {
+  color: #e8f5fb;
+  font: 650 1rem 'Segoe UI', sans-serif;
+  margin-bottom: 2px;
+}
+
+.spatial-viewer-meta {
+  color: #728a9e;
+  font-size: 0.68rem;
+}
+
+.spatial-refresh-button {
+  padding: 6px 14px;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  border-radius: 6px;
+  background: rgba(56, 189, 248, 0.08);
+  color: var(--spatial-cyan);
+  font-size: 0.72rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.spatial-refresh-button:hover:not(:disabled) {
+  background: rgba(56, 189, 248, 0.2);
+  border-color: var(--spatial-cyan);
+}
+
+.spatial-refresh-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.spatial-frame-container {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #050a12;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.spatial-frame-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: opacity 0.3s ease;
+}
+
+.spatial-scanline-overlay {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(
+    rgba(18, 30, 48, 0) 50%,
+    rgba(0, 0, 0, 0.22) 50%
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+  opacity: 0.35;
+}
+
+.spatial-hud-crosshairs {
+  position: absolute;
+  top: 14px;
+  left: 14px;
+  color: var(--spatial-cyan);
+  font-size: 0.6rem;
+  letter-spacing: 0.08em;
+  background: rgba(8, 14, 24, 0.75);
+  padding: 4px 8px;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 4px;
+  backdrop-filter: blur(4px);
+  pointer-events: none;
+}
+
+.spatial-hud-badge {
+  position: absolute;
+  bottom: 14px;
+  right: 14px;
+  background: rgba(8, 14, 24, 0.85);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 8px;
+  padding: 8px 14px;
+  backdrop-filter: blur(6px);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+.spatial-hud-badge-val {
+  font-size: 1.35rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.spatial-hud-badge-lbl {
+  font-size: 0.55rem;
+  color: #8da4b8;
+  letter-spacing: 0.1em;
+  margin-top: 3px;
+}
+
+/* ─── Rolling 3-Day Timeline Bar ─── */
+.spatial-timeline-section {
+  padding: 14px 18px;
+  border-top: 1px solid rgba(56, 189, 248, 0.1);
+  background: rgba(9, 14, 24, 0.6);
+}
+
+.spatial-timeline-title {
+  font-size: 0.68rem;
+  color: #7d96ab;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  margin-bottom: 10px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.spatial-thumbs-row {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+  scrollbar-color: #1e293b transparent;
+}
+
+.spatial-thumb-item {
+  flex: 0 0 130px;
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  border-radius: 7px;
+  overflow: hidden;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  background: rgba(13, 21, 34, 0.9);
+}
+
+.spatial-thumb-item:hover {
+  border-color: rgba(56, 189, 248, 0.45);
+  transform: translateY(-2px);
+}
+
+.spatial-thumb-item.active {
+  border-color: var(--spatial-cyan);
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.3);
+}
+
+.spatial-thumb-preview {
+  width: 100%;
+  height: 72px;
+  object-fit: cover;
+  display: block;
+}
+
+.spatial-thumb-info {
+  padding: 5px 7px;
+  font-size: 0.6rem;
+  color: #8da4b8;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.spatial-thumb-date {
+  color: #e4f0f6;
+  font-weight: 600;
+}
+
+/* ─── Spatial Telemetry Panel ─── */
+.spatial-telemetry-panel {
+  border: 1px solid var(--spatial-border);
+  border-radius: 12px;
+  background: linear-gradient(145deg, rgba(13, 21, 34, 0.98), rgba(7, 13, 22, 0.98));
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.28);
+}
+
+.spatial-telemetry-head {
+  padding: 16px 18px 13px;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.1);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.spatial-telemetry-head h3 {
+  color: #edf7fc;
+  font: 650 1rem 'Segoe UI', sans-serif;
+}
+
+.spatial-telemetry-eyebrow {
+  font-size: 0.6rem;
+  color: var(--spatial-cyan);
+  letter-spacing: 0.14em;
+  font-weight: 700;
+}
+
+.spatial-gauge-section {
+  padding: 22px 18px 18px;
+  text-align: center;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.08);
+}
+
+.spatial-gauge-number {
+  font-size: 3.2rem;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.spatial-gauge-number.low { color: var(--spatial-green); text-shadow: 0 0 24px rgba(52, 211, 153, 0.35); }
+.spatial-gauge-number.medium { color: var(--spatial-amber); text-shadow: 0 0 24px rgba(251, 191, 36, 0.35); }
+.spatial-gauge-number.high { color: var(--spatial-red); text-shadow: 0 0 24px rgba(244, 63, 94, 0.35); }
+
+.spatial-gauge-track {
+  width: 100%;
+  height: 7px;
+  background: rgba(30, 41, 59, 0.6);
+  border-radius: 4px;
+  margin: 14px 0 8px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.spatial-gauge-bar {
+  height: 100%;
+  border-radius: 4px;
+  transition: width 0.6s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.spatial-gauge-bar.low { background: linear-gradient(90deg, #34d399, #10b981); }
+.spatial-gauge-bar.medium { background: linear-gradient(90deg, #fbbf24, #f59e0b); }
+.spatial-gauge-bar.high { background: linear-gradient(90deg, #fb7185, #f43f5e); }
+
+.spatial-gauge-caption {
+  font-size: 0.62rem;
+  color: #7d96ab;
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+
+.spatial-telemetry-rows {
+  padding: 4px 0;
+}
+
+.spatial-row-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 18px;
+  border-bottom: 1px solid rgba(56, 189, 248, 0.05);
+  font-size: 0.74rem;
+}
+
+.spatial-row-item:last-child {
+  border-bottom: none;
+}
+
+.spatial-row-label {
+  color: #7d96ab;
+}
+
+.spatial-row-value {
+  color: #e4f0f6;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.spatial-footer-note {
+  padding: 14px 18px;
+  border-top: 1px solid rgba(56, 189, 248, 0.08);
+  font-size: 0.58rem;
+  color: #627b8f;
+  line-height: 1.6;
+}
+
+.spatial-disclaimer-box {
+  margin-top: 16px;
+  color: #556c80;
+  font-size: 0.58rem;
+  text-align: right;
+  line-height: 1.5;
+}
+
+.spatial-loading-card {
+  padding: 40px;
+  text-align: center;
+  color: #728a9e;
+  font-size: 0.85rem;
+}
