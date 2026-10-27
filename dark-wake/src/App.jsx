@@ -543,15 +543,15 @@ export default function App() {
             <div className="spatial-snapshots-panel">
               <h3>Satellite Snapshots — 3-Day Rolling Window</h3>
               <div className="snapshot-grid">
-                {spatialSnapshots.length === 0 ? (
-                  <p className="no-data-msg">No satellite snapshots loaded yet.</p>
+                {spatialSnapshots?.length === 0 ? (
+                  <div className="fallback-card"><p className="no-data-msg">No satellite snapshots loaded yet.</p><img src="/assets/satellite_chokepoints/hormuz.png" alt="fallback" className="snapshot-img" /></div>
                 ) : (
-                  spatialSnapshots.map((snap, i) => (
-                    <div key={snap.id || i} className="snapshot-card">
-                      <img src={snap.image_url} alt={snap.location_name} className="snapshot-img" />
+                  (spatialSnapshots || []).map((snap, i) => (
+                    <div key={snap?.id || i} className="snapshot-card">
+                      <img src={snap?.image_url || '/assets/satellite_chokepoints/hormuz.png'} alt={snap?.location_name || 'snapshot'} className="snapshot-img" />
                       <div className="snapshot-meta">
-                        <strong>{snap.location_name}</strong>
-                        <span>{snap.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>
+                        <strong>{snap?.location_name || 'Unknown'}</strong>
+                        <span>{snap?.captured_at ? new Date(snap.captured_at).toLocaleString() : '—'}</span>
                       </div>
                     </div>
                   ))
