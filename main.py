@@ -25,11 +25,6 @@ from src.ingestion import (
     sanitize_energy_news,
 )
 from src.scheduler import start_scheduler
-from src.tankermap import (
-    TANKERMAP_LIVE_MAX_AGE,
-    fetch_tankermap_chokepoint_data,
-    get_tankermap_news,
-)
 from src.agents import (
     MetaModelQuotaError,
     get_recent_debates,
@@ -42,7 +37,6 @@ async def lifespan(app: FastAPI):
     init_db()
     fetch_straits_live_chokepoint_data()
     fetch_straits_live_hormuz_data()
-    fetch_tankermap_chokepoint_data()
     fetch_and_store_rss_headlines()
     start_scheduler()
     yield
@@ -283,7 +277,6 @@ def get_news_feed():
     except Exception as e:
         supabase_error = e
 
-    data.extend(get_tankermap_news())
     sanitized_data = []
     for article in data:
         title, category = sanitize_energy_news(str(article.get("title") or ""))
