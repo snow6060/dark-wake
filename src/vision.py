@@ -81,19 +81,10 @@ def fetch_and_store_daily_snapshots():
             if not asset:
                 continue
             url = asset.href
-            resp = requests.get(url, timeout=15)
-            resp.raise_for_status()
-            image_bytes = resp.content
+            # Signed STAC URL (planetary_computer.sign_inplace) — direct cloud asset, no heavy download
 
-            filename = f"{loc_name.lower().replace(' ', '_')}_{end_date.strftime('%Y%m%d_%H%M')}.jpg"
-            public_url = None
-            try:
-                if supabase:
-                    public_url = f"https://your-project.supabase.co/storage/v1/object/public/satellite-snapshots/{filename}"
-            except Exception:
-                pass
-            if not public_url:
-                public_url = url
+            # Direct signed STAC URL — no mock/broken Supabase upload needed
+            public_url = url
 
             db = SessionLocal()
             try:
