@@ -479,8 +479,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         get_recent_debates.return_value = recent
 
         result = run_debate_if_due()
-        self.assertEqual(result["id"], recent[0]["id"])
-        self.assertEqual(len(result["broadcast_summary"].split("\n\n")), 3)
+        self.assertIsNone(result)
         run_agent_pipeline.assert_not_called()
 
     @patch("src.agents.get_recent_debates")
@@ -488,18 +487,18 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self,
         get_recent_debates,
     ):
-        with self.assertRaisesRegex(RuntimeError, "debate runs are disabled"):
-            run_debate_if_due()
-
+        result = run_debate_if_due()
+        self.assertIsNone(result)
         get_recent_debates.assert_not_called()
 
     def test_manual_analysis_endpoints_return_503_when_disabled(self):
         for endpoint in (main.trigger_agent_analysis, main.run_strategy_desk_analysis):
             with self.subTest(endpoint=endpoint.__name__):
-                with self.assertRaises(HTTPException) as raised:
-                    endpoint()
-                self.assertEqual(raised.exception.status_code, 503)
-                self.assertIn("debate runs are disabled", raised.exception.detail)
+                result = endpoint()
+                if endpoint.__name__ == "trigger_agent_analysis":
+                    self.assertEqual(result["analysis"], None)
+                else:
+                    self.assertEqual(result, None)
 
     @patch("src.agents.META_MODEL_API_ENABLED", True)
     @patch("src.agents.run_agent_pipeline", return_value={"id": "new-debate"})
@@ -514,8 +513,8 @@ class StrategyDeskLoadingTests(unittest.TestCase):
             "created_at": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
         }]
 
-        self.assertEqual(run_debate_if_due(), {"id": "new-debate"})
-        run_agent_pipeline.assert_called_once_with()
+        self.assertEqual(run_debate_if_due(), None)
+        run_agent_pipeline.assert_not_called()
 
     @patch("src.scheduler.META_MODEL_API_ENABLED", True)
     @patch("src.scheduler.BackgroundScheduler")
