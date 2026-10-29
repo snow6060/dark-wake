@@ -7,4 +7,47 @@ data/
 *.db
 logs/
 .DS_Store
-app_description.md
+app_description.md# private notes and scratch
+_private/
+notes/
+*.private.md
+*.local.md
+NOTES.md
+TODO_PRIVATE.md
+scratch/# secrets and environment files
+.env
+.env.*
+!.env.example
+!dark-wake/.env.production
+*.pem
+*.key
+service-account*.json
+secrets/# local databases and data
+*.db
+*.sqlite
+oil_intelligence.db
+data/
+satellite_cache/
+*.tif
+*.tiff
+*.jp2
+*.npy
+*.npz# model weights, caches and worker output
+*.pt
+*.pth
+*.safetensors
+*.ckpt
+checkpoints/
+.cache/
+huggingface/
+worker_out/
+worker_logs/
+*.log# notebook outputs
+.ipynb_checkpoints/
+*.ipynb_output# python and node build artifacts (add only if not already present)
+__pycache__/
+.venv/
+venv/
+node_modules/
+dark-wake/dist/
+dark-wake/src-tauri/target/
