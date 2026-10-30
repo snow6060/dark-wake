@@ -42,7 +42,7 @@ async def lifespan(app: FastAPI):
         db = SessionLocal()
         count = db.query(SpatialSnapshot).count()
         db.close()
-        if count == 0:
+        if count == 0 and os.getenv("LEGACY_SPATIAL_FETCH", "false").lower() == "true":
             fetch_and_store_daily_snapshots()
     except Exception:
         pass
@@ -69,6 +69,12 @@ app.add_middleware(
 
 if os.path.isdir("assets"):
     app.mount("/assets", StaticFiles(directory="assets"), name="assets")
+
+try:
+    from src.spatial_api import router as spatial_router
+    app.include_router(spatial_router)
+except Exception as exc:  # spatial code must never stop the app from starting
+    print(f"[Spatial] Router not loaded: {exc}")
 
 
 def get_db():
@@ -127,19 +133,6 @@ def trigger_spatial_fetch():
     result = fetch_and_store_daily_snapshots()
     return result
 
-
-@app.get("/api/spatial/zones")
-def zones():
-    return SpatialSettings().load_active_zones()
-
-@app.get("/api/spatial/snapshots")
-def snapshots():
-    return []
-
-@app.get("/api/spatial/analysis/{snapshot_id}")
-def analysis(snapshot_id: int):
-    analyze_snapshot(snapshot_id)
-    return {"status":"completed","snapshot_id":snapshot_id}
 
 @app.get("/api/chokepoints")
 def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
