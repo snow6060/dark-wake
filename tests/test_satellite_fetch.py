@@ -38,6 +38,12 @@ def _item(tmp_path, item_id, days_ago, scene, hour=6):
     )
 
 
+def _sid(days_ago, zone="fujairah"):
+    """Pass scene id the fetch code builds for a test item that was acquired `days_ago` days ago."""
+    day = datetime.now(timezone.utc) - timedelta(days=days_ago)
+    return f"S2X_{day:%Y%m%d}_{zone}"
+
+
 def _bbox(x_min, x_max, y_min, y_max):
     lons, lats = warp_transform(CRS_UTM, "EPSG:4326", [X0 + x_min, X0 + x_max], [Y0 - y_max, Y0 - y_min])
     return (min(lons), min(lats), max(lons), max(lats))
@@ -161,7 +167,7 @@ def zone_flow(tmp_path, monkeypatch):
 def test_dry_run_writes_nothing(zone_flow):
     db, stac, zone, settings = zone_flow
     result = sf.process_zone(zone, settings, stac, dry_run=True)
-    assert [a["scene"] for a in result["accepted"]] == ["A_new", "C", "D"]
+    assert [a["scene"] for a in result["accepted"]] == [_sid(1), _sid(3), _sid(4)]
     assert not db.tables.get("spatial_snapshots") and not db.files
 
 
@@ -169,8 +175,8 @@ def test_cloudy_scene_is_never_stored_and_one_capture_per_day(zone_flow):
     db, stac, zone, settings = zone_flow
     result = sf.process_zone(zone, settings, stac)
     stored = [r["scene_id"] for r in db.tables["spatial_snapshots"]]
-    assert stored == ["A_new", "C", "D"] and "B_cloudy" not in stored
-    assert any(r["scene"] == "B_cloudy" for r in result["rejected"])
+    assert stored == [_sid(1), _sid(3), _sid(4)] and _sid(2) not in stored
+    assert any(r["scene"] == _sid(2) for r in result["rejected"])
     assert all(r["status"] == "fetched" and r["gsd_m"] == 10 for r in db.tables["spatial_snapshots"])
 
 
@@ -186,14 +192,14 @@ def test_old_captures_are_pruned(zone_flow):
     db, stac, zone, settings = zone_flow
     sf.process_zone(zone, SpatialSettings(keep_per_zone=3), stac)
     sf.process_zone(zone, SpatialSettings(keep_per_zone=2), stac)
-    assert [r["scene_id"] for r in db.tables["spatial_snapshots"]] == ["A_new", "C"]
-    assert "fujairah/D.jpg" not in db.files and "fujairah/D_thumb.jpg" not in db.files
+    assert [r["scene_id"] for r in db.tables["spatial_snapshots"]] == [_sid(1), _sid(3)]
+    assert f"fujairah/{_sid(4)}.jpg" not in db.files and f"fujairah/{_sid(4)}_thumb.jpg" not in db.files
 
 
 def test_limit_downloads_only_the_newest_capture(zone_flow):
     db, stac, zone, settings = zone_flow
     result = sf.process_zone(zone, settings, stac, limit=1)
-    assert [r["scene_id"] for r in db.tables["spatial_snapshots"]] == ["A_new"]
+    assert [r["scene_id"] for r in db.tables["spatial_snapshots"]] == [_sid(1)]
     assert len(result["accepted"]) == 1
 
 
@@ -208,3 +214,84 @@ def test_only_the_first_collection_with_scenes_is_used():
     zone = Zone("z", "Z", "hub", (0, 0, 1, 1), None, 0, 0, (5,), 100)
     assert sf.search_scenes(Stac(), zone, datetime.now(timezone.utc), datetime.now(timezone.utc), SpatialSettings()) == []
     assert calls == [["sentinel-2-c1-l2a"], ["sentinel-2-l2a"]]
+
+
+def test_parallel_strip_read_matches_a_single_read(tmp_path):
+    rng = np.random.default_rng(1)
+    data = rng.integers(1, 255, size=(3, 1000, 1000), dtype=np.uint8)
+    with rasterio.open(tmp_path / "v_vis.tif", "w", driver="GTiff", height=1000, width=1000, count=3,
+                       dtype="uint8", crs=CRS_UTM, transform=from_origin(X0, Y0, 10, 10)) as dst:
+        dst.write(data)
+    item = SimpleNamespace(id="v", assets={"visual": SimpleNamespace(href=str(tmp_path / "v_vis.tif"))})
+    bounds = (X0 + 1234.0, Y0 - 9000.0, X0 + 7000.0, Y0 - 2000.0)
+    rgb, transform, _ = sf.read_visual(item, bounds, workers=5)
+    col0, row0 = round((transform.c - X0) / 10), round((Y0 - transform.f) / 10)
+    assert np.array_equal(rgb, data[:, row0:row0 + rgb.shape[1], col0:col0 + rgb.shape[2]])
+
+
+# ---- passes and mosaics --------------------------------------------------------------------
+def _tile_item(tmp_path, name, item_id, x0, y0, vis_value, nodata_m=0):
+    """A 10 km x 10 km synthetic tile whose top `nodata_m` metres are no-data."""
+    vis = np.full((3, 1000, 1000), vis_value, dtype=np.uint8)
+    scl = np.full((500, 500), 6, dtype=np.uint8)
+    if nodata_m:
+        vis[:, : nodata_m // 10, :] = 0
+        scl[: nodata_m // 20, :] = 0
+    with rasterio.open(tmp_path / f"{name}_vis.tif", "w", driver="GTiff", height=1000, width=1000, count=3,
+                       dtype="uint8", crs=CRS_UTM, transform=from_origin(x0, y0, 10, 10)) as dst:
+        dst.write(vis)
+    with rasterio.open(tmp_path / f"{name}_scl.tif", "w", driver="GTiff", height=500, width=500, count=1,
+                       dtype="uint8", crs=CRS_UTM, transform=from_origin(x0, y0, 20, 20)) as dst:
+        dst.write(scl, 1)
+    return SimpleNamespace(
+        id=item_id, datetime=datetime(2026, 10, 26, 7, 2, tzinfo=timezone.utc), collection_id="sentinel-2-c1-l2a",
+        assets={"visual": SimpleNamespace(href=str(tmp_path / f"{name}_vis.tif")),
+                "scl": SimpleNamespace(href=str(tmp_path / f"{name}_scl.tif"))},
+    )
+
+
+def test_two_adjacent_tiles_cover_a_zone_that_one_tile_cannot(tmp_path):
+    south = _tile_item(tmp_path, "south", "S2A_T40RDN_x", X0, Y0, 100)
+    north = _tile_item(tmp_path, "north", "S2A_T40RDP_x", X0, Y0 + 10000, 200)
+    bbox = _bbox(2000, 6000, -2000, 2000)  # straddles the shared edge: half in each tile
+    single = sf.read_scl_mosaic([south], bbox)
+    assert sf.scl_quality(single["scl"], single["requested_pixels"])[0] == pytest.approx(50, abs=3)
+    info = sf.read_scl_mosaic([south, north], bbox)
+    assert sf.scl_quality(info["scl"], info["requested_pixels"])[0] == pytest.approx(100, abs=0.5)
+    assert len(info["items"]) == 2
+    rgb, transform, crs = sf.read_visual_mosaic(info["items"], info["bounds"], info["crs"])
+    assert rgb.shape[1:] == (round((info["bounds"][3] - info["bounds"][1]) / 10),
+                             round((info["bounds"][2] - info["bounds"][0]) / 10))
+    top = info["bounds"][3]
+    row_north = round((top - (Y0 + 1000)) / 10)   # 1 km north of the shared edge
+    row_south = round((top - (Y0 - 1000)) / 10)   # 1 km south of it
+    col = rgb.shape[2] // 2
+    assert rgb[0, row_north, col] == 200 and rgb[0, row_south, col] == 100
+    assert transform.a == 10 and crs == "EPSG:32640"
+
+
+def test_black_no_data_edge_never_overwrites_good_pixels(tmp_path):
+    first = _tile_item(tmp_path, "first", "S2A_T40RDN_x", X0, Y0, 100, nodata_m=500)      # top 500 m is no-data
+    second = _tile_item(tmp_path, "second", "S2A_T40RDP_x", X0, Y0 + 500, 200)            # covers that strip
+    bbox = _bbox(2000, 6000, 100, 1500)  # y from 100 m to 1500 m south of the first tile's top edge
+    info = sf.read_scl_mosaic([first, second], bbox)
+    assert sf.scl_quality(info["scl"], info["requested_pixels"])[0] == pytest.approx(100, abs=0.5)
+    rgb, _, _ = sf.read_visual_mosaic(info["items"], info["bounds"], info["crs"])
+    top = info["bounds"][3]
+    col = rgb.shape[2] // 2
+    assert rgb[0, round((top - (Y0 - 300)) / 10), col] == 200   # no-data strip filled from the second tile
+    assert rgb[0, round((top - (Y0 - 1200)) / 10), col] == 100  # real data from the first tile is kept
+
+
+def test_tiles_of_one_pass_are_grouped_and_other_passes_are_not():
+    base = datetime(2026, 10, 26, 7, 2, tzinfo=timezone.utc)
+
+    def mk(item_id, minutes, platform=None):
+        props = {"platform": platform} if platform else {}
+        return SimpleNamespace(id=item_id, datetime=base + timedelta(minutes=minutes), properties=props)
+
+    items = [mk("S2A_T40RDN_a", 0), mk("S2A_T40RDP_a", 0.2), mk("S2B_T40RDN_b", 3), mk("S2A_T40RDN_c", 60 * 24 * 5)]
+    groups = sf.group_scenes_by_pass(items)
+    assert [sorted(i.id for i in g) for g in groups] == [["S2A_T40RDN_c"], ["S2B_T40RDN_b"], ["S2A_T40RDN_a", "S2A_T40RDP_a"]]
+    assert sf.pass_scene_id(groups[2], "fujairah") == "S2A_20261026_fujairah"
+    assert sf.platform_code(mk("whatever", 0, platform="sentinel-2c")) == "S2C"
