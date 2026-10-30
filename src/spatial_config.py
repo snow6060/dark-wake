@@ -29,7 +29,7 @@ def _env_int(name: str, default: int) -> int:
 @dataclass(frozen=True)
 class SpatialSettings:
     stac_url: str = "https://earth-search.aws.element84.com/v1"
-    # Tried in order; the first collection that returns scenes is used.
+    # Tried in order; the first collection that returns scenes is used (the second is a fallback).
     collections: tuple[str, ...] = ("sentinel-2-c1-l2a", "sentinel-2-l2a")
     bucket: str = "satellite-snapshots"
     lookback_days: int = 25

@@ -20,10 +20,18 @@ os.environ.setdefault("AWS_NO_SIGN_REQUEST", "YES")
 os.environ.setdefault("GDAL_DISABLE_READDIR_ON_OPEN", "EMPTY_DIR")
 os.environ.setdefault("GDAL_HTTP_MAX_RETRY", "3")
 os.environ.setdefault("GDAL_HTTP_RETRY_DELAY", "2")
+# Speed up reading cloud-optimised GeoTIFFs over a high-latency connection.
+os.environ.setdefault("GDAL_HTTP_MULTIPLEX", "YES")
+os.environ.setdefault("GDAL_HTTP_VERSION", "2")
+os.environ.setdefault("GDAL_HTTP_MERGE_CONSECUTIVE_RANGES", "YES")
+os.environ.setdefault("VSI_CACHE", "TRUE")
+os.environ.setdefault("VSI_CACHE_SIZE", "50000000")
+os.environ.setdefault("GDAL_CACHEMAX", "256")
 
 import io
 import logging
 import math
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -139,17 +147,25 @@ def render_jpeg(rgb: np.ndarray, max_side: int | None = None, stretch: bool = Tr
 # --------------------------------------------------------------------------- STAC search
 
 def search_scenes(stac_client, zone: Zone, start: datetime, end: datetime, settings: SpatialSettings) -> list:
-    """Newest-first list of candidate scenes intersecting the zone box."""
-    search = stac_client.search(
-        collections=list(settings.collections),
-        bbox=list(zone.bbox),
-        datetime=f"{start:%Y-%m-%dT%H:%M:%SZ}/{end:%Y-%m-%dT%H:%M:%SZ}",
-        query={"eo:cloud_cover": {"lt": settings.tile_cloud_prefilter}},
-        max_items=80,
-    )
-    items = [i for i in search.items() if i.datetime is not None]
-    items.sort(key=lambda i: i.datetime, reverse=True)
-    return items
+    """Newest-first candidate scenes intersecting the zone box.
+
+    Collections are tried in order and the first one that returns scenes is used, so the same
+    scene is not read twice from two catalogues.
+    """
+    for collection in settings.collections:
+        search = stac_client.search(
+            collections=[collection],
+            bbox=list(zone.bbox),
+            datetime=f"{start:%Y-%m-%dT%H:%M:%SZ}/{end:%Y-%m-%dT%H:%M:%SZ}",
+            query={"eo:cloud_cover": {"lt": settings.tile_cloud_prefilter}},
+            max_items=80,
+        )
+        items = [i for i in search.items() if i.datetime is not None]
+        if items:
+            items.sort(key=lambda i: i.datetime, reverse=True)
+            return items
+        log.info("[%s] no scenes in collection %s, trying the next one", zone.zone_id, collection)
+    return []
 
 
 # --------------------------------------------------------------------------- Supabase
@@ -230,12 +246,13 @@ def prune_zone(zone_id: str, keep_n: int, bucket: str) -> int:
 # --------------------------------------------------------------------------- orchestration
 
 def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bool = False,
-                 local_dir: str | None = None) -> dict[str, Any]:
+                 local_dir: str | None = None, limit: int | None = None) -> dict[str, Any]:
     """Fetch new clear captures for one zone.
 
     dry_run:   only look (STAC + scene-classification); nothing is downloaded in full,
                uploaded or written to the database.
     local_dir: also save the JPEGs to this folder so you can eyeball the framing.
+    limit:     only download the newest N accepted captures (handy for a first test).
     """
     result: dict[str, Any] = {
         "zone": zone.zone_id, "status": "ok", "scenes_found": 0, "examined": 0,
@@ -292,6 +309,8 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
             best_by_day[day] = {"item": item, "valid_pct": valid_pct, "cloud_pct": cloud_pct, "bounds": info["bounds"]}
 
     candidates = sorted(best_by_day.values(), key=lambda c: c["item"].datetime, reverse=True)
+    if limit:
+        candidates = candidates[:limit]
     result["accepted"] = [
         {"scene": c["item"].id, "acquired_at": c["item"].datetime.isoformat(),
          "valid_pct": c["valid_pct"], "cloud_pct": c["cloud_pct"], "collection": c["item"].collection_id}
@@ -309,12 +328,15 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
     bucket = settings.bucket
     for cand in candidates:
         item = cand["item"]
+        log.info("[%s] downloading the 10 m crop of %s (can take a few minutes) ...", zone.zone_id, item.id)
+        t0 = time.monotonic()
         visual = read_visual(item, cand["bounds"])
         if visual is None:
             result["rejected"].append({"scene": item.id, "reason": "true-colour layer has no overlap"})
             continue
         rgb, transform, crs = visual
         height, width = rgb.shape[1], rgb.shape[2]
+        log.info("[%s] downloaded %dx%d px in %.0f s", zone.zone_id, width, height, time.monotonic() - t0)
         full = render_jpeg(rgb)
         thumb = render_jpeg(rgb, max_side=640)
         paths = {"image": f"{zone.zone_id}/{item.id}.jpg", "thumb": f"{zone.zone_id}/{item.id}_thumb.jpg"}
@@ -339,7 +361,7 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
 
 def run_fetch_cycle(settings: SpatialSettings | None = None, stac_client=None,
                     zone_ids: list[str] | None = None, dry_run: bool = False,
-                    local_dir: str | None = None) -> list[dict[str, Any]]:
+                    local_dir: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
     """Fetch every active zone. One zone failing never stops the others."""
     settings = settings or load_settings()
     zones = load_active_zones(zone_ids)
@@ -350,7 +372,8 @@ def run_fetch_cycle(settings: SpatialSettings | None = None, stac_client=None,
     results = []
     for zone in zones:
         try:
-            results.append(process_zone(zone, settings, stac_client, dry_run=dry_run, local_dir=local_dir))
+            results.append(process_zone(zone, settings, stac_client, dry_run=dry_run,
+                                        local_dir=local_dir, limit=limit))
         except Exception as exc:
             log.exception("[%s] fetch failed", zone.zone_id)
             results.append({"zone": zone.zone_id, "status": "error", "error": str(exc)})
