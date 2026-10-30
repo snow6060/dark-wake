@@ -43,7 +43,10 @@ async def lifespan(app: FastAPI):
         count = db.query(SpatialSnapshot).count()
         db.close()
         if count == 0 and os.getenv("LEGACY_SPATIAL_FETCH", "false").lower() == "true":
-            fetch_and_store_daily_snapshots()
+            try:
+                fetch_and_store_daily_snapshots()
+            except Exception:
+                pass
     except Exception:
         pass
     fetch_straits_live_chokepoint_data()
