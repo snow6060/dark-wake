@@ -51,3 +51,4 @@ venv/
 node_modules/
 dark-wake/dist/
 dark-wake/src-tauri/target/
+CLAUDE.md

@@ -45,26 +45,11 @@ class LiveChokepointSnapshot(Base):
     vessels_observed = Column(Integer, nullable=True)
     tankers_identified = Column(Integer, nullable=True)
     vessels_classified = Column(Integer, nullable=False, default=0)
-    source = Column(String, nullable=False, default="TankerMap")
+    source = Column(String, nullable=False, default="straits.live")
     active_window_minutes = Column(Integer, nullable=True)
     snapshot_at = Column(DateTime, nullable=False)
     capture_seconds = Column(Integer, nullable=False)
 
-
-class TankerMapDailyRecord(Base):
-    __tablename__ = "tankermap_chokepoint_daily"
-
-    id = Column(Integer, primary_key=True, index=True)
-    date = Column(Date, nullable=False)
-    chokepoint_name = Column(String, nullable=False)
-    vessel_count_total = Column(Float, nullable=False)
-    vessel_count_lng = Column(Float, nullable=False)
-    vessel_count_crude = Column(Float, nullable=False)
-    vessel_count_product = Column(Float, nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("date", "chokepoint_name", name="uq_tankermap_date_chokepoint"),
-    )
 
 
 def init_db():
@@ -82,7 +67,7 @@ def init_db():
     if "source" not in snapshot_columns:
         with engine.begin() as connection:
             connection.execute(
-                text("ALTER TABLE chokepoint_live_snapshot ADD COLUMN source VARCHAR DEFAULT 'TankerMap'")
+                text("ALTER TABLE chokepoint_live_snapshot ADD COLUMN source VARCHAR DEFAULT 'straits.live'")
             )
     if "active_window_minutes" not in snapshot_columns:
         with engine.begin() as connection:

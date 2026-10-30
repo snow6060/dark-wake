@@ -14,7 +14,6 @@ from src.database import (
     ChokepointRecord,
     LiveChokepointSnapshot,
     SessionLocal,
-    TankerMapDailyRecord,
     init_db,
 )
 from src.straits_live import STRAITS_LIVE_MAX_AGE, fetch_straits_live_hormuz_data
@@ -129,9 +128,22 @@ def trigger_spatial_fetch():
     return result
 
 
+@app.get("/api/spatial/zones")
+def zones():
+    return SpatialSettings().load_active_zones()
+
+@app.get("/api/spatial/snapshots")
+def snapshots():
+    return []
+
+@app.get("/api/spatial/analysis/{snapshot_id}")
+def analysis(snapshot_id: int):
+    analyze_snapshot(snapshot_id)
+    return {"status":"completed","snapshot_id":snapshot_id}
+
 @app.get("/api/chokepoints")
 def get_chokepoints(chokepoint_name: str = None, db: Session = Depends(get_db)):
-    # Straits.live is the sole live telemetry source; PortWatch/TankerMap deprecated
+    # Straits.live is the sole live telemetry source
     try:
         live_result = fetch_straits_live_chokepoint_data()
     except Exception as exc:
@@ -271,5 +283,5 @@ def get_news_feed():
     if supabase_error:
         if not data:
             raise HTTPException(status_code=500, detail=str(supabase_error))
-        print(f"[News Warning] Supabase feed unavailable; returning public TankerMap headlines: {supabase_error}")
+        print(f"[News Warning] Supabase feed unavailable; returning public headlines: {supabase_error}")
     return data

@@ -114,7 +114,6 @@ class RssFeedFetchTests(unittest.TestCase):
 
         with (
             patch("main.supabase", client),
-            patch("main.get_tankermap_news", return_value=[]),
         ):
             headlines = main.get_news_feed()
 

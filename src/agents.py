@@ -9,7 +9,7 @@ from typing import Any, TypedDict
 from langgraph.graph import END, StateGraph
 import requests
 
-from src.database import ChokepointRecord, SessionLocal, TankerMapDailyRecord
+from src.database import ChokepointRecord, SessionLocal
 from src.ingestion import sanitize_energy_news
 from src.market_data import get_brent_market_snapshot
 from src.supabase_client import supabase
@@ -403,74 +403,39 @@ def _refresh_agent_accuracy_scores() -> None:
 def _gather_telemetry() -> tuple[list[dict[str, Any]], str]:
     db = SessionLocal()
     try:
-        tankermap_rows = (
-            db.query(TankerMapDailyRecord)
-            .order_by(TankerMapDailyRecord.date.desc())
-            .limit(10)
-            .all()
-        )
-        tankermap_data = [
-            {
-                "chokepoint_name": row.chokepoint_name,
-                "date": row.date.isoformat(),
-                "tankers": row.vessel_count_total,
-                "tanker_breakdown": {
-                    "lng": row.vessel_count_lng,
-                    "crude": row.vessel_count_crude,
-                    "product": row.vessel_count_product,
-                },
-                "source": "TankerMap",
-            }
-            for row in tankermap_rows
-        ]
-        tankermap_latest_date = tankermap_rows[0].date.isoformat() if tankermap_rows else None
-    finally:
-        db.close()
-
-    if supabase:
-        for table_name, order_column in (
-            ("chokepoint_telemetry", "date"),
-            ("chokepoint_records", "date"),
-        ):
-            try:
-                columns = (
-                    "chokepoint_name,date,tankers,estimated_oil_flow,source"
-                    if table_name == "chokepoint_telemetry"
-                    else "chokepoint_name,date,vessel_count_tanker,vessel_count_total,baseline_avg,deviation_pct"
-                )
-                rows = _fetch_recent_rows(table_name, order_column, 5, columns)
-                if rows:
-                    cloud_latest_date = max(
-                        str(row.get("date") or "")[:10]
-                        for row in rows
+        # Straits.live / Supabase telemetry only — TankerMap fully removed
+        if supabase:
+            for table_name, order_column in (
+                ("chokepoint_telemetry", "date"),
+                ("chokepoint_records", "date"),
+            ):
+                try:
+                    columns = (
+                        "chokepoint_name,date,tankers,estimated_oil_flow,source"
+                        if table_name == "chokepoint_telemetry"
+                        else "chokepoint_name,date,vessel_count_tanker,vessel_count_total,baseline_avg,deviation_pct"
                     )
-                    if tankermap_data and tankermap_latest_date >= cloud_latest_date:
-                        return tankermap_data[:5], "local tankermap_chokepoint_daily"
-                    return [
-                        {
-                            key: row.get(key)
-                            for key in (
-                                "chokepoint_name",
-                                "date",
-                                "tankers",
-                                "vessel_count_tanker",
-                                "vessel_count_total",
-                                "estimated_oil_flow",
-                                "baseline_avg",
-                                "deviation_pct",
-                            )
-                            if row.get(key) is not None
-                        }
-                        for row in rows[:5]
-                    ], table_name
-            except Exception:
-                continue
-
-    if tankermap_data:
-        return tankermap_data[:5], "local tankermap_chokepoint_daily"
-
-    db = SessionLocal()
-    try:
+                    rows = _fetch_recent_rows(table_name, order_column, 5, columns)
+                    if rows:
+                        return [
+                            {
+                                key: row.get(key)
+                                for key in (
+                                    "chokepoint_name",
+                                    "date",
+                                    "tankers",
+                                    "vessel_count_tanker",
+                                    "vessel_count_total",
+                                    "estimated_oil_flow",
+                                    "baseline_avg",
+                                    "deviation_pct",
+                                )
+                                if row.get(key) is not None
+                            }
+                            for row in rows[:5]
+                        ], table_name
+                except Exception:
+                    continue
         rows = db.query(ChokepointRecord).order_by(ChokepointRecord.date.desc()).limit(10).all()
         return [
             {
