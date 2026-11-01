@@ -3,15 +3,18 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from src.ingestion import fetch_straits_live_chokepoint_data, fetch_and_store_rss_headlines
 from src.straits_live import fetch_straits_live_hormuz_data
-from src.vision import fetch_and_store_daily_snapshots
 from src.agents import META_MODEL_API_ENABLED, run_debate_if_due
+import os
 
 def start_scheduler():
     scheduler = BackgroundScheduler()
     # Run chokepoint ingestion every hour
     scheduler.add_job(fetch_straits_live_chokepoint_data, 'interval', hours=1, id='straits_live_sync', replace_existing=True)
-    # Daily satellite snapshot ingestion (24h rolling window)
-    scheduler.add_job(fetch_and_store_daily_snapshots, 'interval', hours=24, id='spatial_snapshot_sync', replace_existing=True, next_run_time=datetime.now(timezone.utc) + timedelta(seconds=10))
+    if os.getenv("SPATIAL_FETCH_ENABLED", "false").lower() == "true":
+        def _spatial_fetch():
+            from src.satellite_fetch import run_fetch_cycle
+            run_fetch_cycle(limit=1)
+        scheduler.add_job(_spatial_fetch, 'interval', hours=6, id='spatial_snapshot_sync', replace_existing=True)
     # Refresh the free live Hormuz AIS aggregate every five minutes.
     scheduler.add_job(
         fetch_straits_live_hormuz_data,

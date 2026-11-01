@@ -35,6 +35,7 @@ import io
 import logging
 import math
 import time
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -50,6 +51,7 @@ from rasterio.windows import Window, bounds as window_bounds, from_bounds
 
 from src.spatial_config import SpatialSettings, Zone, load_active_zones, load_settings
 from src.supabase_client import supabase
+from src.job_reporter import Reporter
 
 log = logging.getLogger("spatial.fetch")
 
@@ -115,25 +117,26 @@ def scl_quality(scl: np.ndarray, requested_pixels: int) -> tuple[float, float]:
     return round(valid_pct, 1), round(cloud_pct, 1)
 
 
-def _read_strips(href: str, win: Window, count: int, workers: int) -> np.ndarray:
-    """Read a window as horizontal strips in parallel (each thread opens its own file handle).
-
-    On a high-latency connection the time is spent waiting, not transferring, so this is much
-    faster than one big read.
-    """
+def _read_strips(href: str, win: Window, count: int, workers: int, on_strip=None) -> np.ndarray:
     col_off, row_off = int(win.col_off), int(win.row_off)
     width, height = int(win.width), int(win.height)
     out = np.zeros((count, height, width), dtype=np.uint8)
-    n_strips = max(1, min(workers, height // 256))
+    n_strips = max(1, min(32, height // 128))
     edges = np.linspace(0, height, n_strips + 1).astype(int)
+    done = [0]
+    lock = threading.Lock()
 
     def read_strip(i: int) -> None:
         r0, r1 = int(edges[i]), int(edges[i + 1])
-        with rasterio.open(href) as strip_src:  # datasets are not thread-safe: one per thread
+        with rasterio.open(href) as strip_src:
             out[:, r0:r1, :] = strip_src.read(window=Window(col_off, row_off + r0, width, r1 - r0))
+        if on_strip:
+            with lock:
+                done[0] += 1
+                on_strip(done[0], n_strips)
 
-    with ThreadPoolExecutor(max_workers=n_strips) as pool:
-        list(pool.map(read_strip, range(n_strips)))  # list() re-raises any strip's error
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, n_strips))) as pool:
+        list(pool.map(read_strip, range(n_strips)))
     return out
 
 
@@ -261,15 +264,11 @@ def read_scl_mosaic(group: list, bbox: tuple[float, float, float, float]) -> dic
 
 
 def read_visual_mosaic(items: list, bounds: tuple[float, float, float, float], crs: str,
-                       workers: int | None = None):
-    """The same canvas at native 10 m from the true-colour layer, merged across tiles.
-
-    Returns (rgb array shaped (3, h, w), affine transform, crs string).
-    """
+                       workers: int | None = None, on_progress=None):
     workers = workers or int(os.getenv("SPATIAL_READ_WORKERS", "8"))
     left, bottom, right, top = bounds
     canvas = np.zeros((3, round((top - bottom) / 10), round((right - left) / 10)), dtype=np.uint8)
-    for item in items:
+    for k, item in enumerate(items):
         href = _asset_href(item, "visual")
         with rasterio.open(href) as src:
             if src.crs.to_string() != crs:
@@ -278,7 +277,8 @@ def read_visual_mosaic(items: list, bounds: tuple[float, float, float, float], c
             count = src.count
         if win is None:
             continue
-        tile = _read_strips(href, win, count, workers)
+        tick = (lambda d, t, k=k: on_progress((k + d / t) / len(items))) if on_progress else None
+        tile = _read_strips(href, win, count, workers, tick)
         paste_valid(canvas, tile, int(win.row_off) - full[1], int(win.col_off) - full[0])
     return canvas, from_origin(left, top, 10, 10), crs
 
@@ -407,17 +407,8 @@ def prune_zone(zone_id: str, keep_n: int, bucket: str) -> int:
 # --------------------------------------------------------------------------- orchestration
 
 def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bool = False,
-                 local_dir: str | None = None, limit: int | None = None) -> dict[str, Any]:
-    """Fetch new clear captures for one zone.
-
-    A capture is one satellite pass over the zone: tiles from the same pass are merged, so a zone
-    that straddles two tiles is covered completely.
-
-    dry_run:   only look (STAC + scene-classification); nothing is downloaded in full,
-               uploaded or written to the database.
-    local_dir: also save the JPEGs to this folder so you can eyeball the framing.
-    limit:     only download the newest N accepted captures (handy for a first test).
-    """
+                 local_dir: str | None = None, limit: int | None = None, reporter=None) -> dict[str, Any]:
+    rep = reporter or Reporter(echo=False)
     result: dict[str, Any] = {
         "zone": zone.zone_id, "status": "ok", "scenes_found": 0, "passes_found": 0, "examined": 0,
         "already_stored": 0, "accepted": [], "rejected": [], "stored": [], "pruned": 0,
@@ -425,18 +416,20 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=settings.lookback_days)
 
+    rep.progress(3, f"Searching Sentinel-2 catalogue ({zone.display_name})")
     items = search_scenes(stac_client, zone, start, end, settings)
     result["scenes_found"] = len(items)
     if not items:
         result["status"] = "no_scene"
-        log.info("[%s] no scenes in the last %d days", zone.zone_id, settings.lookback_days)
+        rep.log(f"no scenes in the last {settings.lookback_days} days")
         return result
     groups = group_scenes_by_pass(items)
     result["passes_found"] = len(groups)
+    rep.log(f"{len(items)} tiles in {len(groups)} satellite passes found")
 
     known = known_snapshots(zone.zone_id) if supabase is not None else []
     known_ids = {k["scene_id"] for k in known}
-    known_days = {k["acquired_at"].date() for k in known}  # one capture per calendar day is enough
+    known_days = {k["acquired_at"].date() for k in known}
     oldest_kept = None
     if len(known) >= settings.keep_per_zone:
         oldest_kept = min(k["acquired_at"] for k in known[: settings.keep_per_zone])
@@ -451,16 +444,18 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
             result["already_stored"] += 1
             continue
         if oldest_kept is not None and when <= oldest_kept:
-            continue  # older than everything we already keep: would be pruned again immediately
+            continue
         day = when.date()
         if day not in best_by_day and len(best_by_day) >= settings.keep_per_zone:
             break
         result["examined"] += 1
+        rep.progress(5 + 8 * result["examined"] / max(1, min(len(groups), settings.max_candidates)),
+                     "Checking cloud cover")
         try:
             info = read_scl_mosaic(group, zone.bbox)
-        except Exception as exc:  # network, missing asset, bad file: skip this pass only
+        except Exception as exc:
             result["rejected"].append({"scene": scene_id, "reason": f"read error: {exc}"})
-            log.warning("[%s] %s: %s", zone.zone_id, scene_id, exc)
+            rep.log(f"{scene_id}: read error: {exc}")
             continue
         if info is None:
             result["rejected"].append({"scene": scene_id, "reason": "no overlap with zone box"})
@@ -471,6 +466,7 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
             continue
         if cloud_pct > settings.max_cloud_pct:
             result["rejected"].append({"scene": scene_id, "reason": f"{cloud_pct}% cloud/shadow in the zone box"})
+            rep.log(f"{scene_id}: rejected, {cloud_pct}% cloud")
             continue
         prev = best_by_day.get(day)
         if prev is None or valid_pct > prev["valid_pct"]:
@@ -489,40 +485,44 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
     ]
     if not candidates:
         result["status"] = "no_clear_scene"
-        log.info("[%s] %d passes examined, none clear enough", zone.zone_id, result["examined"])
+        rep.log("no new clear capture; the latest stored one will be analysed")
         if not dry_run:
             result["pruned"] = prune_zone(zone.zone_id, settings.keep_per_zone, settings.bucket)
         return result
+    rep.log(f"{len(candidates)} new clear capture(s): " + ", ".join(c["scene_id"] for c in candidates))
     if dry_run and not local_dir:
-        return result  # report only
+        return result
 
     bucket = settings.bucket
-    for cand in candidates:
-        log.info("[%s] downloading the 10 m crop of %s from %d tile(s) (can take a few minutes) ...",
-                 zone.zone_id, cand["scene_id"], len(cand["items"]))
+    for idx, cand in enumerate(candidates):
+        lo, span = 15 + 62 * idx / len(candidates), 62 / len(candidates)
+        rep.progress(lo, "Downloading satellite image (10 m)")
+        rep.log(f"downloading {cand['scene_id']} ({len(cand['items'])} tiles)")
         t0 = time.monotonic()
-        rgb, transform, crs = read_visual_mosaic(cand["items"], cand["bounds"], cand["crs"])
+        rgb, transform, crs = read_visual_mosaic(
+            cand["items"], cand["bounds"], cand["crs"],
+            on_progress=lambda f, lo=lo, span=span: rep.progress(lo + span * f, f"Downloading satellite image {f * 100:.0f}%"))
         height, width = rgb.shape[1], rgb.shape[2]
-        log.info("[%s] downloaded %dx%d px in %.0f s", zone.zone_id, width, height, time.monotonic() - t0)
+        rep.log(f"downloaded {width}x{height} px in {time.monotonic() - t0:.0f} s")
+        rep.progress(lo + span, "Encoding images")
         full = render_jpeg(rgb)
         thumb = render_jpeg(rgb, max_side=640)
         paths = {"image": f"{zone.zone_id}/{cand['scene_id']}.jpg",
                  "thumb": f"{zone.zone_id}/{cand['scene_id']}_thumb.jpg"}
-
         if local_dir:
             out = Path(local_dir) / zone.zone_id
             out.mkdir(parents=True, exist_ok=True)
             (out / f"{cand['scene_id']}.jpg").write_bytes(full)
             (out / f"{cand['scene_id']}_thumb.jpg").write_bytes(thumb)
         if not dry_run:
+            rep.progress(lo + span, "Uploading to storage")
             image_url = upload_image(bucket, paths["image"], full)
             upload_image(bucket, paths["thumb"], thumb)
             insert_snapshot_row(zone, cand, paths, image_url, (width, height), crs, transform)
             result["stored"].append({"scene": cand["scene_id"], "size_px": [width, height],
                                      "image_path": paths["image"]})
-            log.info("[%s] stored %s (%dx%d, cloud %.1f%%)", zone.zone_id, cand["scene_id"], width, height,
-                     cand["cloud_pct"])
-        del rgb, full, thumb  # one big array at a time
+            rep.log(f"stored {cand['scene_id']} ({width}x{height}, cloud {cand['cloud_pct']}%)")
+        del rgb, full, thumb
 
     if not dry_run:
         result["pruned"] = prune_zone(zone.zone_id, settings.keep_per_zone, bucket)

@@ -25,7 +25,6 @@ from src.ingestion import (
     sanitize_energy_news,
 )
 from src.scheduler import start_scheduler
-from src.vision import fetch_and_store_daily_snapshots
 from src.agents import (
     MetaModelQuotaError,
     get_recent_debates,
@@ -37,18 +36,12 @@ from src.market_data import get_brent_market_snapshot
 async def lifespan(app: FastAPI):
     init_db()
     # Phase 1: immediate spatial ingestion if table empty
-    try:
-        from src.database import SessionLocal, SpatialSnapshot
-        db = SessionLocal()
-        count = db.query(SpatialSnapshot).count()
-        db.close()
-        if count == 0 and os.getenv("LEGACY_SPATIAL_FETCH", "false").lower() == "true":
-            try:
-                fetch_and_store_daily_snapshots()
-            except Exception:
-                pass
-    except Exception:
-        pass
+    if os.getenv("LEGACY_SPATIAL_FETCH", "false").lower() == "true":
+        try:
+            from src.satellite_fetch import run_fetch_cycle
+            run_fetch_cycle(limit=1)
+        except Exception:
+            pass
     fetch_straits_live_chokepoint_data()
     fetch_straits_live_hormuz_data()
     fetch_and_store_rss_headlines()
@@ -109,32 +102,36 @@ def health_check():
 
 @app.get("/api/spatial/snapshots")
 def get_spatial_snapshots():
-    from src.database import SessionLocal, SpatialSnapshot
-    db = SessionLocal()
-    try:
-        rows = db.query(SpatialSnapshot).order_by(SpatialSnapshot.captured_at.desc()).limit(60).all()
-        return {
-            "snapshots": [
-                {
-                    "id": r.id,
-                    "location_name": r.location_name,
-                    "image_url": r.image_url,
-                "fallback_url": r.fallback_url,
-                "captured_at": r.captured_at.isoformat() if r.captured_at else None,
+    if supabase is None:
+        return {"snapshots": [], "rolling_window_days": 3, "source": "Sentinel-2 L2A / AWS Earth Search STAC"}
+    rows = (
+        supabase.table("spatial_snapshots")
+        .select("id,zone_id,image_url,acquired_at,thumb_path")
+        .order("acquired_at", desc=True)
+        .limit(60)
+        .execute()
+        .data
+        or []
+    )
+    return {
+        "snapshots": [
+            {
+                "id": r.get("id"),
+                "location_name": r.get("zone_id"),
+                "image_url": r.get("image_url"),
+                "fallback_url": r.get("image_url"),
+                "captured_at": r.get("acquired_at"),
             }
-                for r in rows
-            ],
-            "rolling_window_days": 3,
-            "source": "Sentinel-2 L2A / AWS Earth Search STAC",
-        }
-    finally:
-        db.close()
+            for r in rows
+        ],
+        "rolling_window_days": 3,
+        "source": "Sentinel-2 L2A / AWS Earth Search STAC",
+    }
 
 @app.post("/api/spatial/fetch-now")
 def trigger_spatial_fetch():
-    """Manual trigger to ingest satellite snapshots immediately."""
-    result = fetch_and_store_daily_snapshots()
-    return result
+    from src.satellite_fetch import run_fetch_cycle
+    return {"results": run_fetch_cycle(limit=1)}
 
 
 @app.get("/api/chokepoints")

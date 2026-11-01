@@ -13,7 +13,7 @@ from src.database import ChokepointRecord, SessionLocal
 from src.ingestion import sanitize_energy_news
 from src.market_data import get_brent_market_snapshot
 from src.supabase_client import supabase
-from src.vision import get_spatial_telemetry
+from src.spatial_evidence import SPATIAL_GUARDRAIL, evidence_for_agent, get_spatial_telemetry
 from src.technicals import (
     format_commodity_technical_report,
     get_commodity_technical_indicators,
@@ -999,22 +999,20 @@ def _format_strategy_desk_payload(analysis: dict[str, Any]) -> dict[str, Any]:
         ),
     ))
     spatial = context.get("spatial_telemetry") or {}
+    behaviour = spatial.get("spatial_behaviour") or context.get("spatial_behaviour")
     return {
         **analysis,
         "broadcast_summary": broadcast_summary,
-        "broadcast_script": f"60-second broadcast: Brent at ${float(context['price']):.2f}, desk signal {action['signal'] or 'HOLD'}. Spatial congestion index {spatial.get('spatial_congestion_index', 'N/A')}.",
-        "thumbnail_prompt": f"High-contrast energy market chart with chokepoint map overlay, {action['signal']} visual motif, spatial index {spatial.get('spatial_congestion_index', 'N/A')}, dark terminal theme.",
+        "broadcast_script": f"60-second broadcast: Brent at ${float(context['price']):.2f}, desk signal {action['signal'] or 'HOLD'}. Spatial evidence: {spatial.get('message') or spatial.get('evidence_text') or 'unavailable'}.",
+        "thumbnail_prompt": f"High-contrast energy market chart with chokepoint map overlay, {action['signal']} visual motif, dark terminal theme.",
         "youtube_metadata": {
             "title": f"Dark Wake Strategy Desk — {action['signal'] or 'HOLD'} | Brent ${float(context['price']):.2f}",
-            "description": f"Energy market analysis: Brent ${float(context['price']):.2f}, signal {action['signal']}, spatial congestion {spatial.get('spatial_congestion_index', 'N/A')}, vessel count {spatial.get('estimated_vessel_count', 'N/A')}.",
-            "tags": ["Energy Markets", "Brent Crude", "Strategy Desk", "Maritime Supply", "SAM 3.1 Vision", "Spatial Intelligence"],
+            "description": f"Energy market analysis: Brent ${float(context['price']):.2f}, signal {action['signal']}. {spatial.get('evidence_text') or spatial.get('message') or 'Spatial evidence unavailable'}",
+            "tags": ["Energy Markets", "Brent Crude", "Strategy Desk", "Maritime Supply", "Spatial Intelligence"],
         },
-        "spatial_congestion": {
-            "chokepoint": spatial.get("chokepoint") or "Strait of Hormuz",
-            "congestion_index": spatial.get("spatial_congestion_index"),
-            "estimated_vessel_count": spatial.get("estimated_vessel_count"),
-            "mask_reference": spatial.get("mask_reference"),
-        },
+        "spatial_congestion": None,
+        "spatial_behaviour": behaviour,
+        "spatial_guardrail": spatial.get("guardrail") or SPATIAL_GUARDRAIL,
         "brent_price": brent_price,
         "commodity_basket_summary": basket_summary,
         "desk_action": action,
@@ -1114,8 +1112,24 @@ def _debate_created_at(debate: dict[str, Any]) -> datetime | None:
 def _inject_spatial_telemetry(state: dict[str, Any], chokepoint: str = "Strait of Hormuz") -> dict[str, Any]:
     telemetry = get_spatial_telemetry(chokepoint)
     state.setdefault("market_context", {})
-    state["market_context"]["spatial_congestion_index"] = telemetry.get("spatial_congestion_index")
+    state["market_context"]["spatial_congestion_index"] = None
     state["market_context"]["spatial_telemetry"] = telemetry
+    state["market_context"]["spatial_behaviour"] = telemetry.get("spatial_behaviour")
+    state["market_context"]["spatial_evidence"] = evidence_for_agent(
+        "Supply Thesis",
+        telemetry.get("spatial_behaviour")
+        and {
+            "per_zone": (telemetry.get("spatial_behaviour") or {}).get("per_zone") or [],
+            "global": (telemetry.get("spatial_behaviour") or {}).get("global"),
+            "quality": "Data quality: Sentinel-2 10 m; AIS sandbox.",
+            "singapore": next(
+                (ln for ln in ((telemetry.get("spatial_behaviour") or {}).get("per_zone") or []) if "Singapore" in ln or "singapore" in ln.lower()),
+                None,
+            ),
+            "guardrail": SPATIAL_GUARDRAIL,
+        }
+        or {"per_zone": [telemetry.get("message") or "Spatial evidence unavailable"], "global": "", "quality": "", "guardrail": SPATIAL_GUARDRAIL},
+    )
     return state
 
 

@@ -408,7 +408,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertEqual(invoke.call_count, 8)
 
     def test_strategy_desk_routes_are_documented_with_legacy_aliases(self):
-        paths = {route.path for route in main.app.routes}
+        paths = {route.path for route in main.app.routes if hasattr(route, "path")}
         documented_paths = set(main.app.openapi()["paths"])
 
         self.assertIn("/api/strategy-desk/debates", paths)

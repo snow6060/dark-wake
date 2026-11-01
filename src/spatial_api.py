@@ -11,8 +11,10 @@ from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
 
-from src.spatial_config import load_settings
+from src.spatial_config import PRIMARY_ZONE_IDS, load_settings
 from src.supabase_client import supabase
+from src.geo_utils import range_bearing_km  # noqa: E402
+from src.spatial_jobs import JOBS, start_job  # noqa: E402
 
 router = APIRouter(prefix="/api/spatial", tags=["spatial"])
 
@@ -82,6 +84,7 @@ def _load_zones() -> list[dict[str, Any]]:
     client = _require_supabase()
     now = datetime.now(timezone.utc)
     zones = client.table("spatial_zones").select("*").eq("active", True).order("sort_order").execute().data or []
+    zones = [z for z in zones if z["zone_id"] in PRIMARY_ZONE_IDS]
     out = []
     for z in zones:
         rows = (
@@ -109,6 +112,47 @@ def _load_zones() -> list[dict[str, Any]]:
             "status_message": None if latest else "No clear capture stored yet for this zone.",
         })
     return out
+
+
+@router.post("/zones/{zone_id}/run")
+def run_zone(zone_id: str):
+    jid, started = start_job(zone_id)
+    return {"job_id": jid, "started": started}
+
+
+@router.get("/jobs/{job_id}")
+def job_status(job_id: str, since: int = 0):
+    rep = JOBS.get(job_id)
+    if rep is None:
+        raise HTTPException(status_code=404, detail="Unknown job.")
+    return rep.snapshot(since)
+
+
+@router.get("/zones/{zone_id}/analysis")
+def zone_analysis(zone_id: str):
+    client = _require_supabase()
+    zones = client.table("spatial_zones").select("*").eq("zone_id", zone_id).execute().data
+    if not zones:
+        raise HTTPException(status_code=404, detail=f"Unknown zone '{zone_id}'.")
+    z = zones[0]
+    rows = (client.table("spatial_analysis").select("*").eq("zone_id", zone_id)
+            .order("acquired_at", desc=True).limit(1).execute().data or [])
+    zone_info = {k: z[k] for k in ("zone_id", "display_name", "kind", "ref_lat", "ref_lon", "range_rings_km")}
+    if not rows:
+        return {"zone": zone_info, "analysis": None, "message": "No analysis yet. Run a new analysis."}
+    a = rows[0]
+    snap = (client.table("spatial_snapshots").select("image_url,width_px,height_px,cloud_pct,acquired_at")
+            .eq("id", a["snapshot_id"]).execute().data or [{}])[0]
+
+    def rb(o):
+        d, b = range_bearing_km(z["ref_lat"], z["ref_lon"], o["lat"], o["lon"])
+        return {"range_km": round(d, 2), "bearing_deg": round(b, 1)}
+
+    flags = a["flags"]
+    return {"zone": zone_info, "snapshot": snap, "summary": a["summary"],
+            "hulls": [{**h, **rb(h)} for h in a["hulls"]],
+            "ghosts": [{**g, **rb(g)} for g in flags.get("ghost", [])],
+            "displaced": flags.get("displaced", [])}
 
 
 @router.get("/zones")

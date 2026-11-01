@@ -1,6 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 import { getDailyTrafficDisplay } from './dailyTrafficDisplay.js';
+import SpatialIntelligence from './components/spatial/SpatialIntelligence.jsx';
+
+const SPATIAL_V2 = import.meta.env.VITE_SPATIAL_V2 !== 'false';
 
 const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000')
   .replace(/\/+$/, '');
@@ -558,7 +561,8 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'spatial-intelligence' && (
+        {activeTab === 'spatial-intelligence' && SPATIAL_V2 && <SpatialIntelligence />}
+        {activeTab === 'spatial-intelligence' && !SPATIAL_V2 && (
           <div className="spatial-tab space-y-6">
             {/* Header */}
             <div className="spatial-header">
