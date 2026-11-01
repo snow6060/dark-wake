@@ -10,16 +10,21 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from src.spatial_config import PRIMARY_ZONE_IDS, load_settings
 from src.supabase_client import supabase
 from src.geo_utils import range_bearing_km  # noqa: E402
-from src.spatial_jobs import JOBS, start_job  # noqa: E402
+from src.spatial_jobs import JOBS, start_batch_job, start_job  # noqa: E402
 
 router = APIRouter(prefix="/api/spatial", tags=["spatial"])
 
 _CACHE: dict[str, tuple[float, Any]] = {}
 CACHE_TTL_SECONDS = 60  # the app polls every 15 s; don't hit Supabase each time
+
+
+class BatchRunRequest(BaseModel):
+    zone_ids: list[str]
 
 
 def _cached(key: str, fn: Callable[[], Any]) -> Any:
@@ -97,6 +102,17 @@ def _load_zones() -> list[dict[str, Any]]:
             or []
         )
         latest = _snapshot_view(rows[0], now) if rows else None
+        latest_analysis = []
+        if latest:
+            latest_analysis = (
+                client.table("spatial_analysis")
+                .select("summary")
+                .eq("snapshot_id", latest["id"])
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
         out.append({
             "zone_id": z["zone_id"],
             "display_name": z["display_name"],
@@ -108,6 +124,7 @@ def _load_zones() -> list[dict[str, Any]]:
             "bbox": [z["bbox_west"], z["bbox_south"], z["bbox_east"], z["bbox_north"]],
             "captures_stored": len(rows),
             "latest": latest,
+            "summary": latest_analysis[0].get("summary") if latest_analysis else None,
             "freshness": latest["freshness"] if latest else "NONE",
             "status_message": None if latest else "No clear capture stored yet for this zone.",
         })
@@ -118,6 +135,37 @@ def _load_zones() -> list[dict[str, Any]]:
 def run_zone(zone_id: str):
     jid, started = start_job(zone_id)
     return {"job_id": jid, "started": started}
+
+
+@router.post("/zones/run")
+def run_zones(request: BatchRunRequest):
+    zone_ids = list(dict.fromkeys(request.zone_ids))
+    if not zone_ids:
+        raise HTTPException(status_code=422, detail="Select at least one zone.")
+    if any(zone_id not in PRIMARY_ZONE_IDS for zone_id in zone_ids):
+        raise HTTPException(status_code=422, detail="One or more selected zone IDs are invalid.")
+    client = _require_supabase()
+    active_zones = (
+        client.table("spatial_zones")
+        .select("zone_id")
+        .eq("active", True)
+        .in_("zone_id", zone_ids)
+        .execute()
+        .data
+        or []
+    )
+    active_ids = {row["zone_id"] for row in active_zones}
+    unavailable = [zone_id for zone_id in zone_ids if zone_id not in active_ids]
+    if unavailable:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Selected zones are not active: {', '.join(unavailable)}.",
+        )
+    try:
+        job_id = start_batch_job(zone_ids)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"job_id": job_id, "zone_ids": zone_ids}
 
 
 @router.get("/jobs/{job_id}")
@@ -190,8 +238,8 @@ def zone_analysis(zone_id: str):
 
 
 @router.get("/zones")
-def get_zones():
-    zones = _cached("zones", _load_zones)
+def get_zones(refresh: bool = False):
+    zones = _load_zones() if refresh else _cached("zones", _load_zones)
     return {
         "zones": zones,
         "source": "Sentinel-2 L2A via AWS Earth Search",

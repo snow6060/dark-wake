@@ -46,6 +46,12 @@ async def lifespan(app: FastAPI):
     fetch_straits_live_hormuz_data()
     fetch_and_store_rss_headlines()
     start_scheduler()
+    try:
+        from src.spatial_jobs import start_missing_zone_fetch
+        start_missing_zone_fetch()
+    except Exception:
+        import logging
+        logging.exception("Could not start the missing-zone satellite fetch.")
     yield
 
 app = FastAPI(

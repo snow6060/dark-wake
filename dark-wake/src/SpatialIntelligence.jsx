@@ -8,9 +8,18 @@ const css = `
 .sp{background:#05080d;color:#c8d6e5;font-family:ui-monospace,Menlo,Consolas,monospace;padding:16px;min-height:100%}
 .sp h2{margin:0 0 4px;color:#7dd3fc;letter-spacing:2px;font-size:18px}
 .sp .sub{color:#64748b;font-size:11px;margin-bottom:12px}
-.sp .zones{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
-.sp .zb{background:#0b1320;border:1px solid #1e3a4c;color:#9fb7c9;padding:8px 12px;cursor:pointer;font:inherit;font-size:12px}
-.sp .zb.on{border-color:#34d399;color:#34d399;box-shadow:0 0 8px #34d39955}
+.sp .zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:12px 0}
+.sp .zone-card{background:#080d14;border:1px solid #16303f;padding:9px}
+.sp .zone-card.active{border-color:#34d399}
+.sp .zone-card-head{display:flex;align-items:center;gap:8px}
+.sp .zone-card-head label{display:flex;align-items:center;cursor:pointer}
+.sp .zone-card-head input{accent-color:#34d399}
+.sp .zone-focus{background:none;border:0;color:#9fb7c9;padding:4px 0;text-align:left;cursor:pointer;font:inherit;font-size:12px}
+.sp .zone-card.active .zone-focus{color:#34d399}
+.sp .zone-stats{display:grid;grid-template-columns:1fr auto;gap:2px 8px;margin-top:6px;color:#8296a8;font-size:10px}
+.sp .zone-stats b{text-align:right;color:#c8d6e5}
+.sp .zone-controls{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;color:#8296a8;font-size:11px}
+.sp .zone-controls button{background:none;border:1px solid #1e3a4c;color:#9fb7c9;padding:5px 8px;cursor:pointer;font:inherit}
 .sp .grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(300px,1fr);gap:14px}
 .sp .pending-image{max-height:640px;overflow:auto;background:#000}
 .sp .pending-image img{display:block;width:100%;height:auto}
@@ -50,20 +59,26 @@ async function responseJson(response) {
 export default function SpatialIntelligence() {
   const [zones, setZones] = useState([]);
   const [zone, setZone] = useState(null);
+  const [selectedZones, setSelectedZones] = useState(null);
   const [data, setData] = useState(null);
   const [err, setErr] = useState(null);
   const [view, setView] = useState("radar");
   const [zoom, setZoom] = useState(1);
   const [job, setJob] = useState(null);
   const timer = useRef(null);
+  const zoneRef = useRef(zone);
+  zoneRef.current = zone;
 
   const loadZones = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/api/spatial/zones`);
+      const r = await fetch(`${API}/api/spatial/zones?refresh=true`);
       const j = await responseJson(r);
-      setZones(j.zones || []);
-      setZone((z) => z || (j.zones && j.zones[0] ? j.zones[0].zone_id : null));
-      if (!j.zones?.length) setErr("No spatial zones are available from the backend.");
+      const nextZones = j.zones || [];
+      const nextIds = nextZones.map((item) => item.zone_id);
+      setZones(nextZones);
+      setSelectedZones((current) => current === null ? nextIds : current.filter((id) => nextIds.includes(id)));
+      setZone((current) => current || nextIds[0] || null);
+      if (!nextZones.length) setErr("No spatial zones are available from the backend.");
     } catch (e) { setErr("Could not load zones: " + e.message); }
   }, []);
 
@@ -81,13 +96,22 @@ export default function SpatialIntelligence() {
   useEffect(() => () => clearInterval(timer.current), []);
 
   const run = async () => {
-    const runZone = zone;
+    const zoneIds = selectedZones || zones.map((item) => item.zone_id);
+    if (!zoneIds.length) return;
     try {
       setErr(null);
-      const response = await fetch(`${API}/api/spatial/zones/${runZone}/run`, { method: "POST" });
+      setJob(null);
+      const response = await fetch(`${API}/api/spatial/zones/run`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ zone_ids: zoneIds }),
+      });
       const { job_id: jobId } = await responseJson(response);
       if (!jobId) throw new Error("The backend did not return a job ID.");
-      setJob({ id: jobId, pct: 0, stage: "Starting", lines: [], done: false, error: null, next: 0 });
+      setJob({
+        id: jobId, pct: 0, stage: `Starting ${zoneIds.length} zone(s)`,
+        lines: [], done: false, error: null, next: 0,
+      });
       clearInterval(timer.current);
 
       let next = 0;
@@ -107,8 +131,10 @@ export default function SpatialIntelligence() {
           }));
           if (status.done) {
             clearInterval(timer.current);
-            loadAnalysis(runZone);
             loadZones();
+            if (zoneRef.current && zoneIds.includes(zoneRef.current)) {
+              loadAnalysis(zoneRef.current);
+            }
           }
         } catch (e) {
           clearInterval(timer.current);
@@ -135,6 +161,17 @@ export default function SpatialIntelligence() {
   const pairs = hulls.filter((h) => h.pair);
   const a = S ? age(S.acquired_at) : null;
   const running = job && !job.done;
+  const selectedZoneSet = new Set(selectedZones || zones.map((item) => item.zone_id));
+  const toggleZone = (zoneId) => {
+    setSelectedZones((current) => {
+      const selected = new Set(current || zones.map((item) => item.zone_id));
+      if (selected.has(zoneId)) selected.delete(zoneId);
+      else selected.add(zoneId);
+      return [...selected];
+    });
+  };
+  const selectAllZones = () => setSelectedZones(zones.map((item) => item.zone_id));
+  const clearZones = () => setSelectedZones([]);
 
   return (
     <div className="sp">
@@ -143,12 +180,46 @@ export default function SpatialIntelligence() {
       <div className="sub">
         Sentinel-2 optical, 10 m per pixel · {S ? S.method : "Analysis method pending"} · AIS: Voyage Radar history
       </div>
-      <div className="zones">
-        {zones.map((z) => (
-          <button key={z.zone_id} className={"zb" + (z.zone_id === zone ? " on" : "")} onClick={() => setZone(z.zone_id)}>
-            {z.display_name}
-          </button>
-        ))}
+      <div className="zone-controls">
+        <span>Per-zone capture and analysis status · select zones to process</span>
+        <span>
+          <button type="button" onClick={selectAllZones}>Select all</button>{" "}
+          <button type="button" onClick={clearZones}>Clear</button>
+        </span>
+      </div>
+      <div className="zone-grid">
+        {zones.map((item) => {
+          const summary = item.summary;
+          const latest = item.latest;
+          const checked = selectedZoneSet.has(item.zone_id);
+          return (
+            <div className={"zone-card" + (item.zone_id === zone ? " active" : "")} key={item.zone_id}>
+              <div className="zone-card-head">
+                <label title={`Include ${item.display_name} in the next run`}>
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleZone(item.zone_id)}
+                    aria-label={`Select ${item.display_name} for analysis`}
+                  />
+                </label>
+                <button type="button" className="zone-focus" onClick={() => setZone(item.zone_id)}>
+                  {item.display_name}
+                </button>
+              </div>
+              <div className="zone-stats">
+                <span>Vessels / large</span>
+                <b>{summary ? `${summary.vessels_total} / ${summary.large_total}` : "No analysis"}</b>
+                <span>Large AIS matches</span>
+                <b>{summary ? `${summary.large_matched} / ${summary.large_total}` : "—"}</b>
+                <span>No AIS match · pairs</span>
+                <b>{summary ? `${summary.no_ais_large} · ${summary.alongside_pairs}` : "—"}</b>
+                <span>Capture</span>
+                <b>{latest?.image_url ? `${latest.freshness} · ${latest.cloud_pct ?? "?"}% cloud` : "No image stored"}</b>
+              </div>
+            </div>
+          );
+        })}
       </div>
       {err && <div className="note" style={{ color: "#f87171" }}>{err}</div>}
       {data && !S && (
@@ -241,7 +312,12 @@ export default function SpatialIntelligence() {
         </div>
       )}
       <div className="box run">
-        <button className="runbtn" disabled={running || !zone} onClick={run}>{running ? "ANALYSIS RUNNING…" : "RUN NEW ANALYSIS"}</button>
+        <button className="runbtn" disabled={running || selectedZoneSet.size === 0} onClick={run}>
+          {running ? "FETCHING + ANALYSING…" : "FETCH LATEST IMAGE + RUN ANALYSIS"}
+        </button>
+        <span className="note">
+          {selectedZoneSet.size} zone(s) selected. Images are fetched and analyzed sequentially; results stay associated with each zone.
+        </span>
         {job && (<>
           <div className="bar"><i style={{ width: `${job.pct}%` }} /></div>
           <div style={{ fontSize: 11 }}>{job.pct}% · {job.error ? "ERROR: " + job.error : job.stage}</div>

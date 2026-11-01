@@ -531,7 +531,8 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
 
 def run_fetch_cycle(settings: SpatialSettings | None = None, stac_client=None,
                     zone_ids: list[str] | None = None, dry_run: bool = False,
-                    local_dir: str | None = None, limit: int | None = None) -> list[dict[str, Any]]:
+                    local_dir: str | None = None, limit: int | None = None,
+                    reporter=None) -> list[dict[str, Any]]:
     """Fetch every active zone. One zone failing never stops the others."""
     settings = settings or load_settings()
     zones = load_active_zones(zone_ids)
@@ -543,7 +544,7 @@ def run_fetch_cycle(settings: SpatialSettings | None = None, stac_client=None,
     for zone in zones:
         try:
             results.append(process_zone(zone, settings, stac_client, dry_run=dry_run,
-                                        local_dir=local_dir, limit=limit))
+                                        local_dir=local_dir, limit=limit, reporter=reporter))
         except Exception as exc:
             log.exception("[%s] fetch failed", zone.zone_id)
             results.append({"zone": zone.zone_id, "status": "error", "error": str(exc)})

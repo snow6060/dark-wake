@@ -448,7 +448,9 @@ The V2 tab is a real-data Sentinel-2/AIS workflow, not the former congestion-sco
 - Prompt evidence is routed by debate role: Supply gets all zone lines, Demand gets Singapore plus the global line, synthesis gets aggregate flags and data quality, and Technical gets none. End-to-end debate validation remains pending while Meta calls are disabled.
 
 ### 16.3 Frontend — Spatial Intelligence V2 (`dark-wake/src/SpatialIntelligence.jsx`)
-- Zone selection, radar and optical views, AIS/hull lists, and analysis-job progress.
+- Per-zone status cards, independent zone selection checkboxes, and a switchable detail view with radar, optical imagery, and AIS/hull lists.
+- “Fetch latest image + run analysis” processes only the checked zones, sequentially, with per-zone job progress.
+- At backend startup, missing images are fetched asynchronously for active zones; startup does not rerun analysis or block API readiness on satellite downloads.
 - Data is loaded from the backend API. If a capture exists but has no analysis, the real image is shown with an explicit pending status.
 - The old mock tab is available only as a temporary fallback when `VITE_SPATIAL_V2` is not enabled.
 
