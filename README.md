@@ -213,7 +213,7 @@ switch remains supported.
 
 - [ ] Re-enable `META_MODEL_API_ENABLED=True` (currently hardcoded to `False`).
 - [ ] Re-enable live debate logic (`run_debate_if_due`) and verify Meta API key configuration.
-- [ ] Re-enable SAM 3.1 live vision endpoint (`SAM_3_1_ENABLED=True`).
+- [x] Re-enable SAM 3.1 live vision endpoint (`SAM_3_1_ENABLED=True`).
 - [ ] Replace local placeholder satellite tiles in `assets/satellite_chokepoints/` with live Esri/NASA GIS imagery feeds if available.
 
 ---
