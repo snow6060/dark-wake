@@ -135,14 +135,48 @@ def zone_analysis(zone_id: str):
     if not zones:
         raise HTTPException(status_code=404, detail=f"Unknown zone '{zone_id}'.")
     z = zones[0]
-    rows = (client.table("spatial_analysis").select("*").eq("zone_id", zone_id)
-            .order("acquired_at", desc=True).limit(1).execute().data or [])
     zone_info = {k: z[k] for k in ("zone_id", "display_name", "kind", "ref_lat", "ref_lon", "range_rings_km")}
+    snapshots = (
+        client.table("spatial_snapshots")
+        .select("id,image_url,width_px,height_px,cloud_pct,acquired_at,status")
+        .eq("zone_id", zone_id)
+        .order("acquired_at", desc=True)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not snapshots:
+        return {
+            "zone": zone_info,
+            "snapshot": None,
+            "summary": None,
+            "hulls": [],
+            "ghosts": [],
+            "displaced": [],
+            "message": "No clear capture stored yet. Run a new analysis to look for one.",
+        }
+    snap = snapshots[0]
+    rows = (
+        client.table("spatial_analysis")
+        .select("*")
+        .eq("snapshot_id", snap["id"])
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
     if not rows:
-        return {"zone": zone_info, "analysis": None, "message": "No analysis yet. Run a new analysis."}
+        return {
+            "zone": zone_info,
+            "snapshot": snap,
+            "summary": None,
+            "hulls": [],
+            "ghosts": [],
+            "displaced": [],
+            "message": "Latest capture is stored; analysis is pending. Run a new analysis to process it.",
+        }
     a = rows[0]
-    snap = (client.table("spatial_snapshots").select("image_url,width_px,height_px,cloud_pct,acquired_at")
-            .eq("id", a["snapshot_id"]).execute().data or [{}])[0]
 
     def rb(o):
         d, b = range_bearing_km(z["ref_lat"], z["ref_lon"], o["lat"], o["lon"])

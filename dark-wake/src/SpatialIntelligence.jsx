@@ -12,6 +12,8 @@ const css = `
 .sp .zb{background:#0b1320;border:1px solid #1e3a4c;color:#9fb7c9;padding:8px 12px;cursor:pointer;font:inherit;font-size:12px}
 .sp .zb.on{border-color:#34d399;color:#34d399;box-shadow:0 0 8px #34d39955}
 .sp .grid{display:grid;grid-template-columns:minmax(0,1.6fr) minmax(300px,1fr);gap:14px}
+.sp .pending-image{max-height:640px;overflow:auto;background:#000}
+.sp .pending-image img{display:block;width:100%;height:auto}
 .sp .box{background:#080d14;border:1px solid #16303f;padding:10px}
 .sp .tabs button{background:none;border:1px solid #1e3a4c;color:#9fb7c9;padding:4px 10px;margin-right:6px;cursor:pointer;font:inherit;font-size:11px}
 .sp .tabs button.on{background:#12304a;color:#7dd3fc}
@@ -32,9 +34,18 @@ const css = `
 @keyframes spsw{to{transform:rotate(360deg)}}
 .sp .opt{position:relative;overflow:auto;max-height:640px;background:#000}
 .sp .opt svg{position:absolute;inset:0;width:100%;height:100%}
+@media(max-width:900px){.sp .grid{grid-template-columns:minmax(0,1fr)}}
 `;
 
 const age = (iso) => (iso ? Math.round((Date.now() - new Date(iso).getTime()) / 36e5) : null);
+
+async function responseJson(response) {
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.detail || `HTTP ${response.status}`);
+  }
+  return body;
+}
 
 export default function SpatialIntelligence() {
   const [zones, setZones] = useState([]);
@@ -49,18 +60,18 @@ export default function SpatialIntelligence() {
   const loadZones = useCallback(async () => {
     try {
       const r = await fetch(`${API}/api/spatial/zones`);
-      const j = await r.json();
+      const j = await responseJson(r);
       setZones(j.zones || []);
       setZone((z) => z || (j.zones && j.zones[0] ? j.zones[0].zone_id : null));
-    } catch (e) { setErr("Backend unreachable: " + e.message); }
+      if (!j.zones?.length) setErr("No spatial zones are available from the backend.");
+    } catch (e) { setErr("Could not load zones: " + e.message); }
   }, []);
 
   const loadAnalysis = useCallback(async (id) => {
     if (!id) return;
     try {
       const r = await fetch(`${API}/api/spatial/zones/${id}/analysis`);
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      setData(await r.json());
+      setData(await responseJson(r));
       setErr(null);
     } catch (e) { setErr("Could not load analysis: " + e.message); }
   }, []);
@@ -70,18 +81,46 @@ export default function SpatialIntelligence() {
   useEffect(() => () => clearInterval(timer.current), []);
 
   const run = async () => {
-    const r = await fetch(`${API}/api/spatial/zones/${zone}/run`, { method: "POST" });
-    const { job_id } = await r.json();
-    setJob({ id: job_id, pct: 0, stage: "Starting", lines: [], done: false, error: null, next: 0 });
-    clearInterval(timer.current);
-    timer.current = setInterval(async () => {
-      try {
-        const cur = await new Promise((res) => setJob((j) => { res(j); return j; }));
-        const s = await (await fetch(`${API}/api/spatial/jobs/${job_id}?since=${cur ? cur.next : 0}`)).json();
-        setJob((j) => ({ ...s, id: job_id, lines: [...(j ? j.lines : []), ...s.lines], next: s.next }));
-        if (s.done) { clearInterval(timer.current); loadAnalysis(zone); loadZones(); }
-      } catch (e) { /* keep polling */ }
-    }, 1200);
+    const runZone = zone;
+    try {
+      setErr(null);
+      const response = await fetch(`${API}/api/spatial/zones/${runZone}/run`, { method: "POST" });
+      const { job_id: jobId } = await responseJson(response);
+      if (!jobId) throw new Error("The backend did not return a job ID.");
+      setJob({ id: jobId, pct: 0, stage: "Starting", lines: [], done: false, error: null, next: 0 });
+      clearInterval(timer.current);
+
+      let next = 0;
+      let polling = false;
+      timer.current = setInterval(async () => {
+        if (polling) return;
+        polling = true;
+        try {
+          const response = await fetch(`${API}/api/spatial/jobs/${jobId}?since=${next}`);
+          const status = await responseJson(response);
+          next = status.next ?? next;
+          setJob((current) => ({
+            ...status,
+            id: jobId,
+            lines: [...(current?.lines || []), ...(status.lines || [])],
+            next,
+          }));
+          if (status.done) {
+            clearInterval(timer.current);
+            loadAnalysis(runZone);
+            loadZones();
+          }
+        } catch (e) {
+          clearInterval(timer.current);
+          setJob((current) => ({ ...current, done: true, error: e.message }));
+          setErr("Could not track analysis job: " + e.message);
+        } finally {
+          polling = false;
+        }
+      }, 1200);
+    } catch (e) {
+      setErr("Could not start analysis: " + e.message);
+    }
   };
 
   const hulls = data && data.hulls ? data.hulls : [];
@@ -101,7 +140,9 @@ export default function SpatialIntelligence() {
     <div className="sp">
       <style>{css}</style>
       <h2>SPATIAL INTELLIGENCE</h2>
-      <div className="sub">Sentinel-2 optical, 10 m per pixel · SAM 3 verification · AIS: Voyage Radar terrestrial history</div>
+      <div className="sub">
+        Sentinel-2 optical, 10 m per pixel · {S ? S.method : "Analysis method pending"} · AIS: Voyage Radar history
+      </div>
       <div className="zones">
         {zones.map((z) => (
           <button key={z.zone_id} className={"zb" + (z.zone_id === zone ? " on" : "")} onClick={() => setZone(z.zone_id)}>
@@ -110,7 +151,24 @@ export default function SpatialIntelligence() {
         ))}
       </div>
       {err && <div className="note" style={{ color: "#f87171" }}>{err}</div>}
-      {data && !S && <div className="box">{data.message || "No analysis yet."} Press "Run new analysis" below.</div>}
+      {data && !S && (
+        <div className="box">
+          <div>{data.message || "No analysis yet."} Press "Run new analysis" below.</div>
+          {snap?.image_url && (
+            <div className="box">
+              <div className="note">
+                Latest stored capture
+                {snap.acquired_at ? ` · ${age(snap.acquired_at)} h old` : ""}
+                {snap.cloud_pct != null ? ` · ${snap.cloud_pct}% cloud` : ""}
+                {" · Analysis pending"}
+              </div>
+              <div className="pending-image">
+                <img src={snap.image_url} alt="Latest stored Sentinel-2 capture; analysis pending" />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
       {S && (
         <div className="grid">
           <div className="box">
@@ -159,7 +217,7 @@ export default function SpatialIntelligence() {
               {" "}({Math.round((100 * S.large_matched) / Math.max(S.large_total, 1))}%)
             </div>
             <div className="kv">
-              <span style={{ color: "#ef4444" }}>No AIS match (large)</span><b>{S.no_ais_large}</b>
+              <span style={{ color: "#ef4444" }}>No AIS match (large) · feed coverage {Math.round(S.feed_coverage_large * 100)}%</span><b>{S.no_ais_large}</b>
               <span style={{ color: "#f59e0b" }}>AIS position offset</span><b>{S.displaced}</b>
               <span style={{ color: "#fb7185" }}>Ghost AIS (no vessel)</span><b>{S.ghost}</b>
               <span style={{ color: "#22d3ee" }}>Hull-to-hull pairs</span><b>{S.alongside_pairs}{S.sam_contact_pairs ? ` (${S.sam_contact_pairs} SAM contact)` : ""}</b>
@@ -176,7 +234,7 @@ export default function SpatialIntelligence() {
             <details><summary>Hull-to-hull pairs ({(pairs.length / 2) | 0})</summary>
               {pairs.map((h) => <div className="row" key={h.id}><span>#{h.id} {h.length_m} m</span><span>{h.lat.toFixed(4)}, {h.lon.toFixed(4)}</span></div>)}</details>
             <div className="note">
-              "No AIS match" means no report in the provider's history within 24 h of the pass. Feed coverage of large vessels: {Math.round(S.feed_coverage_large * 100)}%.
+              "No AIS match" means no usable report matched within this provider's coverage and time limits; it is not proof AIS is off. {S.ais_note}.
               Ghost = no vessel at the claimed position (not proof of spoofing). Pairs are candidates: the image shows two hulls in contact, not a cargo transfer.
             </div>
           </div>

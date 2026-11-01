@@ -211,10 +211,11 @@ switch remains supported.
 
 ## Pending Launch Toggles / Pre-Submission Checklist
 
-- [ ] Re-enable `META_MODEL_API_ENABLED=True` (currently hardcoded to `False`).
-- [ ] Re-enable live debate logic (`run_debate_if_due`) and verify Meta API key configuration.
-- [x] Re-enable SAM 3.1 live vision endpoint (`SAM_3_1_ENABLED=True`).
-- [ ] Replace local placeholder satellite tiles in `assets/satellite_chokepoints/` with live Esri/NASA GIS imagery feeds if available.
+- [ ] Keep `META_MODEL_API_ENABLED=False` during the handover; do not make live Meta API calls.
+- [ ] Re-enable live debate logic only after explicit approval and verification of backend configuration.
+- [x] Wire Spatial Intelligence V2 to the Sentinel-2/AIS backend; local frontend production build succeeds.
+- [ ] Validate browser interactions and persist an analysis after the Supabase `spatial_analysis` table is present.
+- [ ] Remove the legacy mock tab and placeholder imagery after V2 is verified; SAM 3.1 video tracking is not implemented.
 
 ---
 

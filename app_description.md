@@ -431,50 +431,49 @@ The current implementation has deliberate boundaries users should understand:
 
 ---
 
-## 16. Phase 3 — SAM 3.1 Computer Vision, Spatial Intelligence Tab & n8n Media Contract
+## 16. Spatial Intelligence — image-first implementation
 
-Implemented on branch `meta-hackathon-upgrade` (do not merge to `main` until project fully finished).
+The V2 tab is a real-data Sentinel-2/AIS workflow, not the former congestion-score mock. Set `VITE_SPATIAL_V2=true` in the local frontend environment to use it; the original tab remains a temporary fallback when the flag is off.
 
-### 16.1 SAM 3.1 Vision Module (`src/vision.py`)
-- Mock SAM 3.1 endpoint (`SAM_3_1_ENABLED=False`). Live endpoint raises `NotImplementedError`; no live API credits burned during tests or runtime.
-- Processes satellite map tiles for Strait of Hormuz, Bab el-Mandeb, and Malacca Strait.
-- Returns Spatial Congestion Index (0–100), segment bounding boxes, vessel count, latency risk, and mask reference.
-- Zero-fail fallback: placeholder PNG snapshots in `assets/satellite_chokepoints/` (`hormuz.png`, `bab_el_mandeb.png`, `malacca.png`). Replace with real satellite imagery when available.
-- Unit tests (`tests/test_vision.py`, 5 cases) pass cleanly.
+### 16.1 Image and AIS pipeline
+- Active zones and captures are read from Supabase. Sentinel-2 imagery is searched through AWS Earth Search and stored in the `satellite-snapshots` bucket; without a capture, the app does not invent vessel counts.
+- `src/vessel_census.py` proposes hulls from the image. SAM 3 image segmentation is an optional verifier (`SAM_ENABLE=1`); the normal analysis can run with SAM off. SAM 3.1 Object Multiplex video tracking and dwell tracking are not implemented.
+- AIS matching uses Voyage Radar history through `src/ais_client.py`. Use the sandbox endpoint configured in local `.env` while developing; do not scrape VesselFinder.
+- The UI reports measured hull size and AIS-match status, not cargo or ship class. “No AIS match” is not proof AIS is off; ghosts and alongside pairs are candidates, not proof of spoofing or transfer. Scene age and cloud cover accompany the results.
+- Spatial routes include `/api/spatial/zones`, `/api/spatial/zones/{zone_id}/analysis`, `/api/spatial/zones/{zone_id}/run`, and `/api/spatial/jobs/{job_id}`. A stored image with no analysis is shown as pending.
+- Creating `public.spatial_analysis` in Supabase is a deployment prerequisite; apply [sql/spatial_analysis.sql](./sql/spatial_analysis.sql) before persisting new analysis.
 
 ### 16.2 Strategy Desk Integration (`src/agents.py`)
-- `vision.py` imported; `_inject_spatial_telemetry()` injects congestion index and bottleneck telemetry into Turn 1 (Technical Analyst) and Turns 2/3 (Supply/Demand Thesis) before text fallbacks.
-- `META_MODEL_API_ENABLED=False` preserved (hard-coded disable — do not flip until project fully finished; see §16.6).
+- Spatial evidence is built from stored `spatial_analysis` rows and exposed in the response as `spatial_behaviour`; the retired `spatial_congestion` field is `null`.
+- Stage-specific prompt routing still needs end-to-end validation. Missing or expired zone data must remain unavailable, never be represented as zero.
 
-### 16.3 Frontend — Dedicated "Spatial Intelligence" Tab (`App.jsx`)
-- New top-level nav tab: **Spatial Intelligence** (SAM 3.1 Vision).
-- Interactive chokepoint selector (Hormuz / Bab el-Mandeb / Malacca).
-- SAM 3.1 Viewer Frame with satellite tile + color-coded segmentation mask overlay (red >70, amber >40, green ≤40).
-- Spatial Telemetry Panel: Congestion Index, vessel count, latency risk, SAM token metadata.
+### 16.3 Frontend — Spatial Intelligence V2 (`dark-wake/src/SpatialIntelligence.jsx`)
+- Zone selection, radar and optical views, AIS/hull lists, and analysis-job progress.
+- Data is loaded from the backend API. If a capture exists but has no analysis, the real image is shown with an explicit pending status.
+- The old mock tab is available only as a temporary fallback when `VITE_SPATIAL_V2` is not enabled.
 
 ### 16.4 n8n Media Contract (`POST /api/strategy-desk/run` & `/api/strategy-desk/debates`)
 Response payload now explicitly includes all fields required by the n8n media pipeline:
 - `broadcast_script`: 60-second TTS-ready voiceover.
 - `thumbnail_prompt`: Muse Image generation prompt (high-contrast charts, chokepoint maps, bullish/bearish motifs).
 - `youtube_metadata`: `{ title, description, tags[] }`.
-- `spatial_congestion`: `{ chokepoint, index, vessel_count, mask_ref }`.
+- `spatial_behaviour`: structured evidence from stored analyses; `spatial_congestion` is `null` because the former congestion score was mocked.
 
 ### 16.5 RSS Headline Cap (Supabase)
 - `RSS_HEADLINE_LIMIT=100`; `_prune_rss_headlines()` enforces first-in-last-out (delete oldest when 100 reached).
 - Endpoint and tests updated.
 
-### 16.6 Hard-Coded Meta API Disable (REMEMBER — change when finished)
-- `META_MODEL_API_ENABLED=False` in `src/agents.py`, scheduler, and README.md.
-- **DO NOT USE LIVE META API** until project fully finished. Flip to `True` only after all Phase 3 work is verified and committed.
-- All SAM 3.1 vision calls are mocked (`SAM_3_1_ENABLED=False`).
+### 16.6 External model controls
+- Keep `META_MODEL_API_ENABLED=False` during this handover; do not make live Meta API calls.
+- SAM is local image processing, not a Meta API request. `SAM_ENABLE` is off unless explicitly enabled.
 
 ### 16.7 Windows Tauri Build Prerequisite
 - Tauri desktop build requires MSVC `link.exe` (Visual Studio 2017+ or Build Tools for Visual Studio with C++ option). VS Code alone is insufficient. See §15 / README.md.
 
 ### 16.8 Git Workflow (executed after verification)
 - Branch: `meta-hackathon-upgrade` (work exclusively here; do not merge to `main`).
-- After full test suite passes: `git add .`; `git commit -m "feat: implement SAM 3.1 computer vision (src/vision.py), dedicated Spatial Intelligence UI tab, and n8n media contract"`; `git push origin meta-hackathon-upgrade`.
+- Use focused local verification and conventional commits; do not merge to `main` until browser, data, and deployment checks are complete.
 
 ---
 
-**In short:** users install a small desktop app and view the data; the hosted backend performs collection, scheduling, persistence, AI orchestration, and SAM 3.1 vision processing (mocked until finished). The Meta API and SAM 3.1 live endpoints remain disabled by hard-coded guard until the project is fully finished. Replace placeholder satellite PNGs with real tiles when available; flip `META_MODEL_API_ENABLED=True` only at final completion.
+**Current status:** the spatial frontend and guarded backend API are wired, and the frontend production build succeeds. Browser validation, a saved analysis after the Supabase table is present, and coverage of the remaining zones are pending. Do not describe the current detector as SAM 3.1 video tracking.
