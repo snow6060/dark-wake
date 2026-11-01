@@ -25,8 +25,6 @@ def load(threshold=0.4):
     global _proc
     if _proc is None:
         model = build_sam3_image_model(bpe_path=_bpe_path())  # downloads weights on first run (gated: needs your HF login)
-        if os.getenv("SAM_FP16") == "1" and torch.cuda.is_available():
-            model = model.half()  # try this only if you hit CUDA out-of-memory on the 4 GB card
         _proc = Sam3Processor(model, confidence_threshold=threshold)
     return _proc
 

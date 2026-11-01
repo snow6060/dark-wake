@@ -1,5 +1,6 @@
 import io
 import math
+import os
 from datetime import datetime, timezone
 
 import numpy as np
@@ -35,15 +36,15 @@ def build_hulls(cands, tr, crs):
             px, py = math.cos(th), math.sin(th)
             for sgn in (-1, 1):
                 items.append((c.cx + sgn * px * c.width_px / 4, c.cy + sgn * py * c.width_px / 4,
-                              L, W / 2, c.angle_deg, True))
+                                  L, W / 2, c.angle_deg, True, getattr(c, "sam", None)))
         else:
-            items.append((c.cx, c.cy, L, W, c.angle_deg, False))
+            items.append((c.cx, c.cy, L, W, c.angle_deg, False, getattr(c, "sam", None)))
     if not items:
         return []
     lons, lats = to_lonlat(tr, crs, np.array([i[0] for i in items]), np.array([i[1] for i in items]))
     return [{"id": k, "lat": float(lats[k]), "lon": float(lons[k]), "length_m": round(i[2]),
              "width_m": round(i[3]), "axis_deg": round(i[4]), "size_class": vc.size_class(i[2]),
-             "pair": i[5], "col": round(i[0]), "row": round(i[1])} for k, i in enumerate(items)]
+             "pair": i[5], "col": round(i[0]), "row": round(i[1]), "sam": i[6]} for k, i in enumerate(items)]
 
 
 def cloud_checker(rgb, tr, crs):
@@ -84,7 +85,16 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True):
     img = Image.open(image) if image else download_image(snap["image_url"], rep)
     rgb = np.asarray(img.convert("RGB"))
     rep.progress(89, "Detecting vessels in the image")
-    hulls = build_hulls(vc.propose_candidates(rgb), tr, crs)
+    cands = vc.propose_candidates(rgb)
+    if os.getenv("SAM_ENABLE") == "1":
+        from src.sam_refine import refine_candidates
+        from src.sam_runtime import segment_exemplars
+        rep.progress(90, "SAM 3 verification (pairs + sample)")
+        refine_candidates(rgb, cands, segment_exemplars, sample=int(os.getenv("SAM_SAMPLE", "10")))
+        for c in cands:
+            if c.wide and hasattr(c, "sam"):
+                rep.log(f"pair at ({c.cx:.0f},{c.cy:.0f}): {c.sam}")
+    hulls = build_hulls(cands, tr, crs)
     rep.log(f"{len(hulls)} vessels detected in the image")
 
     rep.progress(93, "Fetching AIS history")
@@ -126,7 +136,9 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True):
         "ais_visible_pct": round(100 * len(res["matched"]) / max(n, 1)),
         "feed_coverage_large": res["feed_coverage_large"], "ais_credits_left": credits,
         "ais_note": "Voyage Radar terrestrial history; anchored ships trusted 24 h, moving 30 min",
-        "method": "classical proposals (SAM refinement pending)",
+        "method": ("classical proposals + SAM 3 verification (pairs + sample)" if os.getenv("SAM_ENABLE") == "1"
+                   else "classical proposals (SAM verification off)"),
+        "sam_contact_pairs": sum(1 for h in hulls if h["pair"] and (h.get("sam") or {}).get("contact")) // 2,
     }
     rep.log(f"{n} vessels seen; {len(res['matched'])} matched to AIS in the feed; "
             f"{len(res['dark'])} dark candidates; {len(res['ghost'])} ghosts; {len(res['displaced'])} displaced")

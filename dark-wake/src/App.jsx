@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import './App.css';
 import { getDailyTrafficDisplay } from './dailyTrafficDisplay.js';
-import SpatialIntelligence from './components/spatial/SpatialIntelligence.jsx';
+import SpatialIntelligence from "./SpatialIntelligence";
 
 const SPATIAL_V2 = import.meta.env.VITE_SPATIAL_V2 !== 'false';
 
@@ -561,8 +561,7 @@ export default function App() {
           </div>
         )}
 
-        {activeTab === 'spatial-intelligence' && SPATIAL_V2 && <SpatialIntelligence />}
-        {activeTab === 'spatial-intelligence' && !SPATIAL_V2 && (
+        {import.meta.env.VITE_SPATIAL_V2 === "true" ? <SpatialIntelligence /> : (
           <div className="spatial-tab space-y-6">
             {/* Header */}
             <div className="spatial-header">
