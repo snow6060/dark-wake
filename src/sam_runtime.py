@@ -1,58 +1,60 @@
-"""SAM 3.1 hull segmentation. Isolated so the API process never has to import torch."""
+"""SAM 3.1 hull segmentation using official Meta checkpoints and runtime."""
 from __future__ import annotations
 
 import os
 from pathlib import Path
-
 import numpy as np
 import torch
 from PIL import Image
-from transformers import Sam3Model, Sam3Processor
 
-MODEL_ID = os.getenv("SAM_MODEL_ID", "facebook/sam3.1")
+# Import Meta's official builder
+try:
+    from sam3.model_builder import build_sam3_image_model
+except ImportError:
+    build_sam3_image_model = None
+
 _model = None
-_proc = None
-
-
-def _ensure_hf_token() -> None:
-    if os.getenv("HF_TOKEN") or os.getenv("HUGGINGFACE_HUB_TOKEN"):
-        return
-    token_path = Path(os.getenv("HF_TOKEN_FILE", r"D:\ai_cache\huggingface\token"))
-    if token_path.is_file():
-        os.environ["HF_TOKEN"] = token_path.read_text(encoding="utf-8").strip()
 
 
 def load():
-    global _model, _proc
+    global _model
     if _model is None:
-        _ensure_hf_token()
+        if build_sam3_image_model is None:
+            raise ImportError("Official 'sam3' package is not installed. Run: pip install git+https://github.com/facebookresearch/sam3.1.git")
+        
         dev = "cuda" if torch.cuda.is_available() else "cpu"
-        dt = torch.float16 if dev == "cuda" else torch.float32
-        try:
-            m = Sam3Model.from_pretrained(MODEL_ID, dtype=dt)
-        except TypeError:
-            m = Sam3Model.from_pretrained(MODEL_ID, torch_dtype=dt)
-        _model = m.to(dev).eval()
-        _proc = Sam3Processor.from_pretrained(MODEL_ID)
-    return _model, _proc
+        
+        # Point to your downloaded checkpoint path inside _private or cache
+        checkpoint_path = os.getenv("SAM_CHECKPOINT_PATH", r"D:\ai_cache\hub\facebook_sam3.1_multiplex.pt")
+        
+        _model = build_sam3_image_model(
+            checkpoint_path=checkpoint_path,
+            device=dev,
+            eval_mode=True
+        )
+    return _model
 
 
 def segment_exemplars(chip_rgb, boxes_xyxy, threshold=0.4, mask_threshold=0.5):
-    """Positive example boxes -> every matching object in the chip."""
-    model, proc = load()
-    inputs = proc(
-        images=Image.fromarray(chip_rgb),
-        input_boxes=[[list(map(float, b)) for b in boxes_xyxy]],
-        input_boxes_labels=[[1] * len(boxes_xyxy)],
-        return_tensors="pt",
-    ).to(model.device)
-    sizes = inputs.get("original_sizes").tolist()
-    feed = {k: (v.to(model.dtype) if torch.is_floating_point(v) else v) for k, v in inputs.items()}
+    """Positive example boxes -> matching hulls using official Meta runtime."""
+    model = load()
+    
+    # Convert input chip for Meta's inference format
+    image_pil = Image.fromarray(chip_rgb)
+    
     with torch.no_grad():
-        out = model(**feed)
-    res = proc.post_process_instance_segmentation(
-        out, threshold=threshold, mask_threshold=mask_threshold, target_sizes=sizes
-    )[0]
-    masks = res["masks"].cpu().numpy().astype(bool)
-    boxes, scores = res["boxes"].cpu().numpy(), res["scores"].cpu().numpy()
-    return [{"mask": masks[i], "box": boxes[i], "score": float(scores[i])} for i in range(len(scores))]
+        # Run inference using Meta's native prompt-box API
+        results = model.predict_box(image_pil, boxes_xyxy)
+        
+    masks = results.get("masks", np.array([]))
+    boxes = results.get("boxes", np.array([]))
+    scores = results.get("scores", np.array([]))
+    
+    return [
+        {
+            "mask": masks[i].astype(bool), 
+            "box": boxes[i], 
+            "score": float(scores[i])
+        } 
+        for i in range(len(scores)) if scores[i] >= threshold
+    ]
