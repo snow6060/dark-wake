@@ -593,8 +593,12 @@ def _summarize_previous_debate(
     }]
 
 
-def _context_prompt(state: DebateState) -> str:
-    context = state["market_context"]
+def _context_prompt(state: DebateState, agent_name: str | None = None) -> str:
+    context = dict(state["market_context"])
+    spatial = context.pop("spatial_telemetry", {}) or {}
+    context.pop("spatial_behaviour", None)
+    context.pop("spatial_evidence", None)
+    context.pop("spatial_congestion_index", None)
     prior_summary = state.get("previous_debates", [])
     accuracy_summary = state.get("agent_accuracy", [])
     if context.get("market_is_closed"):
@@ -624,16 +628,26 @@ def _context_prompt(state: DebateState) -> str:
             " Review the supplied historical accuracy for your agent role. Use it as "
             "calibrated feedback, not as a substitute for current market evidence."
         )
-    return json.dumps(
-        {
-            "live_context": context,
-            "previous_debate_summary": prior_summary,
-            "agent_accuracy_history": accuracy_summary,
-            "instruction": instruction,
-        },
-        ensure_ascii=False,
-        default=str,
-    )
+    prompt_context = {
+        "live_context": context,
+        "previous_debate_summary": prior_summary,
+        "agent_accuracy_history": accuracy_summary,
+        "instruction": instruction,
+    }
+    if agent_name:
+        evidence = spatial.get("spatial_behaviour") or {}
+        if not spatial.get("available"):
+            message = spatial.get("message") or "Spatial evidence unavailable."
+            evidence = {
+                "per_zone": [message],
+                "global": message,
+                "quality": "Spatial data could not be loaded.",
+                "singapore": "Singapore: unavailable (spatial evidence could not be loaded).",
+            }
+        spatial_text = evidence_for_agent(agent_name, evidence)
+        if spatial_text:
+            prompt_context["spatial_evidence"] = spatial_text
+    return json.dumps(prompt_context, ensure_ascii=False, default=str)
 
 
 def _gather_context_node(state: DebateState) -> dict[str, Any]:
@@ -697,7 +711,7 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
         ),
     }[role]
     prompt = (
-        f"{_context_prompt(state)}\n\n"
+        f"{_context_prompt(state, agent['name'])}\n\n"
         f"TECHNICAL ANALYSIS:\n{state.get('initial_technical', '')}\n\n"
         f"SUPPLY THESIS:\n{state.get('initial_supply_thesis', '')}\n\n"
         f"DEMAND THESIS:\n{state.get('initial_demand_thesis', '')}\n\n"
@@ -735,7 +749,7 @@ def _thesis_rebuttal(role: str, loop: int, state: DebateState) -> dict[str, Any]
             "not support."
         )
     prompt = (
-        f"{_context_prompt(state)}\n\n"
+        f"{_context_prompt(state, AGENTS[role]['name'])}\n\n"
         f"TECHNICAL ANALYSIS:\n{state['initial_technical']}\n\n"
         f"PREVIOUS OPPOSING THESIS:\n{state[prior_key]}\n\n"
         f"Your prior analysis:\n{state['initial_supply_thesis'] if role == 'supply' else state['initial_demand_thesis']}\n\n"
@@ -812,7 +826,7 @@ def _parse_verdict(response: str) -> dict[str, Any]:
 def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
     context = state["market_context"]
     prompt = (
-        f"{_context_prompt(state)}\n\n"
+        f"{_context_prompt(state, AGENTS['synthesis']['name'])}\n\n"
         f"DESK ANALYSES:\n{json.dumps({key: state[key] for key in ('initial_technical', 'initial_supply_thesis', 'initial_demand_thesis', 'supply_rebuttal_1', 'demand_rebuttal_1', 'supply_rebuttal_2', 'demand_rebuttal_2')}, ensure_ascii=False)}\n\n"
         "Deliver a risk-managed synthesis for the current Brent price. Reconcile the technical "
         "analysis with the supply and demand theses. Compare the prior synthesis and all "
@@ -1111,26 +1125,9 @@ def _debate_created_at(debate: dict[str, Any]) -> datetime | None:
 
 def _inject_spatial_telemetry(state: dict[str, Any], chokepoint: str = "Strait of Hormuz") -> dict[str, Any]:
     telemetry = get_spatial_telemetry(chokepoint)
-    state.setdefault("market_context", {})
-    state["market_context"]["spatial_congestion_index"] = None
-    state["market_context"]["spatial_telemetry"] = telemetry
-    state["market_context"]["spatial_behaviour"] = telemetry.get("spatial_behaviour")
-    state["market_context"]["spatial_evidence"] = evidence_for_agent(
-        "Supply Thesis",
-        telemetry.get("spatial_behaviour")
-        and {
-            "per_zone": (telemetry.get("spatial_behaviour") or {}).get("per_zone") or [],
-            "global": (telemetry.get("spatial_behaviour") or {}).get("global"),
-            "quality": "Data quality: Sentinel-2 10 m; AIS sandbox.",
-            "singapore": next(
-                (ln for ln in ((telemetry.get("spatial_behaviour") or {}).get("per_zone") or []) if "Singapore" in ln or "singapore" in ln.lower()),
-                None,
-            ),
-            "guardrail": SPATIAL_GUARDRAIL,
-        }
-        or {"per_zone": [telemetry.get("message") or "Spatial evidence unavailable"], "global": "", "quality": "", "guardrail": SPATIAL_GUARDRAIL},
-    )
+    state["spatial_congestion_index"] = None
+    state["spatial_telemetry"] = telemetry
+    state["spatial_behaviour"] = telemetry.get("spatial_behaviour")
     return state
-
 
 

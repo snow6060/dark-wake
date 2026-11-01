@@ -45,7 +45,16 @@ def format_zone_line(zone_row: dict[str, Any], now: datetime) -> str:
     name = zone_row.get("display_name") or zone_row.get("zone_id") or "Unknown zone"
     summary = zone_row.get("summary") or {}
     acquired = zone_row.get("acquired_at")
-    if not acquired or not summary:
+    if not summary:
+        if zone_row.get("has_snapshot"):
+            age = _age_hours(acquired, now)
+            freshness = tag_freshness(age)
+            age_txt = "unknown age" if age is None else f"{age:.0f} h old"
+            cloud = zone_row.get("cloud_pct")
+            cloud_txt = "cloud unknown" if cloud is None else f"{cloud:g}% cloud"
+            status = zone_row.get("snapshot_status")
+            state = "analysis pending" if status in {"fetched", "analyzing"} else "analysis unavailable"
+            return f"{name}: capture stored ({freshness}, {age_txt}, {cloud_txt}); {state}."
         return f"{name}: unavailable (no clear scene in 25 days)."
     age = _age_hours(acquired, now)
     freshness = tag_freshness(age)
@@ -55,19 +64,28 @@ def format_zone_line(zone_row: dict[str, Any], now: datetime) -> str:
     if cloud is None:
         cloud = zone_row.get("cloud_pct")
     age_txt = "unknown age" if age is None else f"{age:.0f} h old"
-    cloud_txt = "cloud unknown" if cloud is None else f"{cloud:.0f}% cloud"
-    stale = " STALE." if freshness == "STALE" else ""
+    cloud_txt = "cloud unknown" if cloud is None else f"{cloud:g}% cloud"
+    vessels = summary.get("vessels_total")
     large = summary.get("large_total")
     matched = summary.get("large_matched")
     dark = summary.get("no_ais_large", summary.get("dark"))
     ghost = summary.get("ghost")
     displaced = summary.get("displaced")
+    pairs = summary.get("alongside_pairs")
+    share = round(100 * matched / large) if matched is not None and large else 0
+    coverage = summary.get("feed_coverage_large")
+    coverage_pct = round(100 * coverage) if coverage is not None else None
+    coverage_txt = "unknown" if coverage_pct is None else f"{coverage_pct}%"
     return (
-        f"{name} (Sentinel-2, 10 m, scene {age_txt}, {cloud_txt}): "
-        f"{matched if matched is not None else 'n/a'} of {large if large is not None else 'n/a'} "
-        f"large hulls matched to AIS; {dark if dark is not None else 0} dark (no AIS); "
-        f"{ghost if ghost is not None else 0} ghosts; {displaced if displaced is not None else 0} displaced."
-        f"{stale}"
+        f"{freshness} {name} (Sentinel-2, 10 m, scene {age_txt}, {cloud_txt}): "
+        f"{vessels if vessels is not None else 'n/a'} vessels "
+        f"({large if large is not None else 'n/a'} large); "
+        f"{matched if matched is not None else 'n/a'}/{large if large is not None else 'n/a'} "
+        f"large matched ({share}%; AIS feed coverage {coverage_txt}); "
+        f"{dark if dark is not None else 0} large with no AIS match; "
+        f"{displaced if displaced is not None else 0} displaced; "
+        f"{ghost if ghost is not None else 0} ghost candidates; "
+        f"{pairs if pairs is not None else 0} alongside pairs."
     )
 
 
@@ -86,7 +104,7 @@ def build_spatial_evidence(zone_rows: list[dict[str, Any]], now: datetime | None
         + f" Combined dark/ghost/displaced flags: {flags}."
     )
     quality = (
-        "Data quality: optical 10 m Sentinel-2; AIS is Voyage Radar sandbox history. "
+        "Data quality: optical 10 m Sentinel-2; AIS history coverage varies by zone. "
         "Missing zones are unavailable, not zero."
     )
     return {
@@ -106,16 +124,15 @@ def evidence_for_agent(agent_name: str, evidence: dict[str, Any]) -> str:
         return ""
     block = [SPATIAL_GUARDRAIL]
     if "demand" in name:
-        if evidence.get("singapore"):
-            block.append(evidence["singapore"])
+        block.append(evidence.get("singapore") or "Singapore: unavailable (no clear scene or analysis).")
         block.append(evidence.get("global") or "")
     elif "synthesis" in name or "risk" in name or "desk" in name:
         block.append(evidence.get("global") or "")
         block.append(evidence.get("quality") or "")
-        block.extend(evidence.get("per_zone") or [])
     else:
         block.extend(evidence.get("per_zone") or [])
         block.append(evidence.get("global") or "")
+        block.append(evidence.get("quality") or "")
     return "\n".join(x for x in block if x)
 
 
@@ -125,6 +142,8 @@ def build_spatial_payload(evidence: dict[str, Any]) -> dict[str, Any]:
         "flag_count": evidence.get("flag_count"),
         "global": evidence.get("global"),
         "per_zone": evidence.get("per_zone"),
+        "quality": evidence.get("quality"),
+        "singapore": evidence.get("singapore"),
         "guardrail": SPATIAL_GUARDRAIL,
     }
 
@@ -144,9 +163,9 @@ def load_zone_evidence_rows() -> list[dict[str, Any]]:
     rows = []
     for zid in PRIMARY_ZONE_IDS:
         z = by_id.get(zid, {"zone_id": zid, "display_name": zid})
-        analysis = (
-            supabase.table("spatial_analysis")
-            .select("summary,acquired_at,snapshot_id")
+        snapshots = (
+            supabase.table("spatial_snapshots")
+            .select("id,cloud_pct,acquired_at,status")
             .eq("zone_id", zid)
             .order("acquired_at", desc=True)
             .limit(1)
@@ -154,24 +173,27 @@ def load_zone_evidence_rows() -> list[dict[str, Any]]:
             .data
             or []
         )
-        snap = None
-        if analysis:
+        snap = snapshots[0] if snapshots else None
+        analysis = []
+        if snap:
             snaps = (
-                supabase.table("spatial_snapshots")
-                .select("cloud_pct,acquired_at")
-                .eq("id", analysis[0]["snapshot_id"])
+                supabase.table("spatial_analysis")
+                .select("summary,acquired_at")
+                .eq("snapshot_id", snap["id"])
                 .limit(1)
                 .execute()
                 .data
                 or []
             )
-            snap = snaps[0] if snaps else None
+            analysis = snaps
         row = {
             "zone_id": zid,
             "display_name": z.get("display_name"),
             "summary": (analysis[0].get("summary") if analysis else None),
-            "acquired_at": (analysis[0].get("acquired_at") if analysis else None),
+            "acquired_at": (analysis[0].get("acquired_at") if analysis else (snap or {}).get("acquired_at")),
             "cloud_pct": (snap or {}).get("cloud_pct"),
+            "has_snapshot": snap is not None,
+            "snapshot_status": (snap or {}).get("status"),
         }
         rows.append(row)
     return rows

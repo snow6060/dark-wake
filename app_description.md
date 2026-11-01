@@ -445,7 +445,7 @@ The V2 tab is a real-data Sentinel-2/AIS workflow, not the former congestion-sco
 
 ### 16.2 Strategy Desk Integration (`src/agents.py`)
 - Spatial evidence is built from stored `spatial_analysis` rows and exposed in the response as `spatial_behaviour`; the retired `spatial_congestion` field is `null`.
-- Stage-specific prompt routing still needs end-to-end validation. Missing or expired zone data must remain unavailable, never be represented as zero.
+- Prompt evidence is routed by debate role: Supply gets all zone lines, Demand gets Singapore plus the global line, synthesis gets aggregate flags and data quality, and Technical gets none. End-to-end debate validation remains pending while Meta calls are disabled.
 
 ### 16.3 Frontend — Spatial Intelligence V2 (`dark-wake/src/SpatialIntelligence.jsx`)
 - Zone selection, radar and optical views, AIS/hull lists, and analysis-job progress.
