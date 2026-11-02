@@ -58,6 +58,10 @@ _NEWS_CATEGORIES = (
 )
 
 
+def contains_sensitive_energy_content(text: str) -> bool:
+    return bool(_SENSITIVE_NEWS_PATTERN.search(str(text or "")))
+
+
 def sanitize_energy_news(text: str) -> tuple[str, str]:
     """Return a commercial energy-market headline/summary and a category."""
     plain_text = re.sub(r"<[^>]*>", " ", unescape(str(text or "")))
@@ -66,7 +70,7 @@ def sanitize_energy_news(text: str) -> tuple[str, str]:
         (name for name, pattern in _NEWS_CATEGORIES if pattern.search(plain_text)),
         "energy_markets",
     )
-    if _SENSITIVE_NEWS_PATTERN.search(plain_text):
+    if contains_sensitive_energy_content(plain_text):
         labels = {
             "inventories": "inventory",
             "shipping_routes": "shipping route",

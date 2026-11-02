@@ -8,6 +8,7 @@ import requests
 
 import main
 from src.agents import (
+    AGENT_CONTENT_POLICY,
     MetaModelAPIError,
     MetaModelQuotaError,
     _context_prompt,
@@ -47,7 +48,18 @@ class StrategyDeskLoadingTests(unittest.TestCase):
 
         self.assertEqual(result, "Complete response.")
         self.assertEqual(interaction.call_count, 2)
+        self.assertIn(AGENT_CONTENT_POLICY, interaction.call_args.args[0])
         sleep.assert_called_once_with(3)
+
+    @patch("src.agents._meta_model_interaction", return_value=(
+        "Military activity is affecting commercial shipping."
+    ))
+    @patch("src.agents._meta_model_api_key", return_value="configured")
+    def test_invoke_rejects_non_commercial_agent_output(self, _api_key, interaction):
+        with self.assertRaisesRegex(RuntimeError, "commercial-content policy"):
+            _invoke("system", "prompt", "model")
+
+        interaction.assert_called_once()
 
     @patch("src.agents._meta_model_api_key")
     @patch("src.agents.requests.post")
@@ -295,6 +307,25 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertIn('"verdict_rationale": "Supply disruptions may tighten the market."', prompt)
         self.assertIn('"price": 84.0', prompt)
         self.assertIn("Treat the prior view as a hypothesis, not a fact or an anchor", prompt)
+
+    def test_context_omits_sensitive_headlines_and_prior_analysis(self):
+        prompt = _context_prompt({
+            "market_context": {
+                "price": 84.0,
+                "headlines": [{
+                    "title": "War conflict threatens tanker shipping routes and crude supply",
+                }],
+            },
+            "previous_debates": [{
+                "verdict_rationale": "Military activity may disrupt crude exports.",
+            }],
+        })
+
+        self.assertIn("Excluded non-commercial context omitted", prompt)
+        self.assertNotRegex(
+            prompt.lower(),
+            r"\b(war|conflict|military|threatens|tanker|crude|exports)\b",
+        )
 
     def test_agent_accuracy_scores_are_included_in_prompt_context(self):
         prompt = _context_prompt({

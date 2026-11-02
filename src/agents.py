@@ -10,7 +10,7 @@ from langgraph.graph import END, StateGraph
 import requests
 
 from src.database import ChokepointRecord, SessionLocal
-from src.ingestion import sanitize_energy_news
+from src.ingestion import contains_sensitive_energy_content, sanitize_energy_news
 from src.market_data import get_brent_market_snapshot
 from src.supabase_client import supabase
 from src.spatial_evidence import SPATIAL_GUARDRAIL, evidence_for_agent, get_spatial_telemetry
@@ -42,6 +42,14 @@ MAX_AGENT_OUTPUT_TOKENS = 2000
 MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
 META_API_TIMEOUT_SECONDS = 60
+AGENT_CONTENT_POLICY = (
+    "Content boundary: analyze commercial energy markets only. Do not discuss, describe, "
+    "speculate about, or repeat armed conflict, military activity, political or geopolitical "
+    "disputes, sanctions, or violence. Ignore such material in the input; use only neutral "
+    "commercial evidence such as prices, inventories, production, consumption, trade, port "
+    "operations, and shipping observations. Do not identify excluded events or actors, or "
+    "attribute market movements to them. If eligible evidence is insufficient, say so plainly."
+)
 META_MODEL_API_URL = "https://api.meta.ai/v1"
 
 
@@ -88,7 +96,7 @@ AGENTS = {
             "You are a maritime spatial-intelligence analyst supporting an oil-market debate. "
             "Use only the supplied Sentinel-2 and AIS-derived evidence. Distinguish measured "
             "observations, plausible implications, and unknowns. Never infer cargo, flag, "
-            "sanctions, destination, vessel intent, or causation from imagery or AIS alone."
+            "destination, vessel intent, or causation from imagery or AIS alone."
         ),
     },
     "technical": {
@@ -136,6 +144,20 @@ _daily_debate_lock = Lock()
 
 def _meta_model_api_key() -> str | None:
     return os.getenv("META_MODEL_API_KEY")
+
+
+def _sanitize_agent_context(value: Any) -> Any:
+    if isinstance(value, str):
+        if contains_sensitive_energy_content(value):
+            return "[Excluded non-commercial context omitted.]"
+        return value
+    if isinstance(value, dict):
+        return {key: _sanitize_agent_context(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_agent_context(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_agent_context(item) for item in value)
+    return value
 
 
 def _model_for_role(role: str) -> str:
@@ -221,7 +243,17 @@ def _invoke(
         model_not_found = False
         for attempt in range(MAX_MODEL_ATTEMPTS):
             try:
-                return _meta_model_interaction(system, prompt, candidate, max_tokens)
+                response = _meta_model_interaction(
+                    f"{system}\n\n{AGENT_CONTENT_POLICY}",
+                    prompt,
+                    candidate,
+                    max_tokens,
+                )
+                if contains_sensitive_energy_content(response):
+                    raise RuntimeError(
+                        "Strategy Desk agent output violated the commercial-content policy."
+                    )
+                return response
             except MetaModelAPIError as exc:
                 last_error = exc
                 message = exc.detail.lower()
@@ -611,8 +643,9 @@ def _context_prompt(state: DebateState, agent_name: str | None = None) -> str:
     context.pop("spatial_behaviour", None)
     context.pop("spatial_evidence", None)
     context.pop("spatial_congestion_index", None)
-    prior_summary = state.get("previous_debates", [])
-    accuracy_summary = state.get("agent_accuracy", [])
+    context = _sanitize_agent_context(context)
+    prior_summary = _sanitize_agent_context(state.get("previous_debates", []))
+    accuracy_summary = _sanitize_agent_context(state.get("agent_accuracy", []))
     if context.get("market_is_closed"):
         instruction = (
             "The Brent market is closed for the weekend. The supplied price is the latest "
@@ -660,6 +693,7 @@ def _context_prompt(state: DebateState, agent_name: str | None = None) -> str:
                 "quality": "Spatial data could not be loaded.",
                 "singapore": "Singapore: unavailable (spatial evidence could not be loaded).",
             }
+        evidence = _sanitize_agent_context(evidence)
         spatial_text = evidence_for_agent(agent_name, evidence)
         if spatial_text:
             prompt_context["spatial_evidence"] = spatial_text
@@ -682,7 +716,7 @@ def _spatial_analysis(state: DebateState) -> dict[str, str]:
         "cloud/coverage and vessel/AIS-match counts where supplied; (2) plausible implications "
         "for shipping flow, congestion, or supply-route risk; (3) uncertainty, missing/stale "
         "zones, and alternative explanations; and (4) what new evidence would change the view. "
-        "Do not infer cargo, sanctions, destination, intent, or causation. An unmatched hull is "
+        "Do not infer cargo, destination, intent, or causation. An unmatched hull is "
         "not proof of AIS evasion; alongside pairs are not proof of transfer. This is one "
         "additional input to the market debate, not a replacement for prices, indicators, "
         "telemetry, headlines, or macro/supply/demand evidence. Aim for 300–400 words."
@@ -771,10 +805,10 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
     }[role]
     prompt = (
         f"{_context_prompt(state, agent['name'])}\n\n"
-        f"TECHNICAL ANALYSIS:\n{state.get('initial_technical', '')}\n\n"
-        f"SUPPLY THESIS:\n{state.get('initial_supply_thesis', '')}\n\n"
-        f"DEMAND THESIS:\n{state.get('initial_demand_thesis', '')}\n\n"
-        f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', '')}\n\n"
+        f"TECHNICAL ANALYSIS:\n{_sanitize_agent_context(state.get('initial_technical', ''))}\n\n"
+        f"SUPPLY THESIS:\n{_sanitize_agent_context(state.get('initial_supply_thesis', ''))}\n\n"
+        f"DEMAND THESIS:\n{_sanitize_agent_context(state.get('initial_demand_thesis', ''))}\n\n"
+        f"SPATIAL INTELLIGENCE ANALYSIS:\n{_sanitize_agent_context(state.get('spatial_analysis', ''))}\n\n"
         "Use the market context and your discipline-specific evidence above as primary inputs; "
         "the spatial assessment is supplementary context, not a replacement.\n"
         f"{role_instructions}\n{_AGENT_RESPONSE_FORMAT}"
@@ -814,10 +848,10 @@ def _thesis_rebuttal(role: str, loop: int, state: DebateState) -> dict[str, Any]
         )
     prompt = (
         f"{_context_prompt(state, AGENTS[role]['name'])}\n\n"
-        f"TECHNICAL ANALYSIS:\n{state['initial_technical']}\n\n"
-        f"PREVIOUS OPPOSING THESIS:\n{state[prior_key]}\n\n"
-        f"Your prior analysis:\n{state['initial_supply_thesis'] if role == 'supply' else state['initial_demand_thesis']}\n\n"
-        f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', '')}\n\n"
+        f"TECHNICAL ANALYSIS:\n{_sanitize_agent_context(state['initial_technical'])}\n\n"
+        f"PREVIOUS OPPOSING THESIS:\n{_sanitize_agent_context(state[prior_key])}\n\n"
+        f"Your prior analysis:\n{_sanitize_agent_context(state['initial_supply_thesis'] if role == 'supply' else state['initial_demand_thesis'])}\n\n"
+        f"SPATIAL INTELLIGENCE ANALYSIS:\n{_sanitize_agent_context(state.get('spatial_analysis', ''))}\n\n"
         f"REBUTTAL LOOP {loop}: {instruction} Do not merely repeat your opening thesis. "
         "Write 220–300 words, update your direction/confidence if the evidence warrants it, "
         "and explicitly say when the evidence cannot resolve the disagreement.\n"
@@ -905,9 +939,10 @@ def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
             "demand_rebuttal_2",
         )
     }
+    agent_analyses = _sanitize_agent_context(agent_analyses)
     prompt = (
         f"{_context_prompt(state, AGENTS['synthesis']['name'])}\n\n"
-        f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', 'Unavailable')}\n\n"
+        f"SPATIAL INTELLIGENCE ANALYSIS:\n{_sanitize_agent_context(state.get('spatial_analysis', 'Unavailable'))}\n\n"
         f"DEBATE ANALYSES:\n{json.dumps(agent_analyses, ensure_ascii=False)}\n\n"
         "Deliver a risk-managed synthesis for the supplied Brent price and forecast horizon. "
         "Use spatial analysis as an additional input alongside—not instead of—the complete "
