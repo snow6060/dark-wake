@@ -1,8 +1,8 @@
 begin;
 
--- AIS provenance was not stored on prior spatial_analysis rows. Clear all derived
--- analyses so the startup bootstrap can rebuild them from live AIS. Keep snapshots
--- and satellite image objects intact.
+-- Reset the one-time startup bootstrap. It fetches missing zone imagery first,
+-- then rebuilds all active-zone analyses from AIS at each latest scene time.
+-- Keep satellite snapshots and image objects intact.
 alter table public.spatial_analysis
     add column if not exists ais_vessels jsonb not null default '[]'::jsonb;
 
@@ -17,7 +17,7 @@ create table if not exists public.spatial_startup_state (
 alter table public.spatial_startup_state enable row level security;
 
 insert into public.spatial_startup_state (startup_key, status)
-values ('live_ais_bootstrap', 'pending')
+values ('spatial_image_ais_bootstrap_v2', 'pending')
 on conflict (startup_key) do update
 set status = 'pending',
     started_at = null,

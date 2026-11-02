@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 from src import spatial_jobs
 
 
@@ -40,65 +42,55 @@ class StartupStateQuery:
 
 class StartupSupabase:
     def __init__(self):
-        self.row = {"startup_key": "live_ais_bootstrap", "status": "pending"}
+        self.row = {
+            "startup_key": "spatial_image_ais_bootstrap_v2",
+            "status": "pending",
+        }
         self.claims = 0
 
     def table(self, name):
-        if name == "spatial_startup_state":
-            return StartupStateQuery(self)
-        if name == "spatial_snapshots":
-            return StartupSnapshotQuery()
-        raise AssertionError(f"Unexpected table: {name}")
+        if name != "spatial_startup_state":
+            raise AssertionError(f"Unexpected table: {name}")
+        return StartupStateQuery(self)
 
 
-class StartupSnapshotQuery:
-    def select(self, _columns):
-        return self
-
-    def eq(self, _column, _value):
-        return self
-
-    def order(self, *_args, **_kwargs):
-        return self
-
-    def limit(self, _count):
-        return self
-
-    def execute(self):
-        return SimpleNamespace(data=[{"id": 1}])
-
-
-def test_startup_live_analysis_claims_persisted_gate_once(monkeypatch):
+def test_bootstrap_fetches_images_then_scene_matched_ais_once(monkeypatch):
     client = StartupSupabase()
+    events = []
     monkeypatch.setattr("src.supabase_client.supabase", client)
-    monkeypatch.setattr("src.spatial_config.load_active_zones", lambda: [])
+    monkeypatch.setattr(spatial_jobs, "_fetch_missing_zones", lambda: events.append("images"))
+    monkeypatch.setattr(
+        spatial_jobs,
+        "_analyze_latest_zones_with_live_ais",
+        lambda: events.append("scene-matched-ais"),
+    )
 
-    spatial_jobs._run_startup_live_analysis()
-    spatial_jobs._run_startup_live_analysis()
+    spatial_jobs.run_startup_spatial_bootstrap()
+    spatial_jobs.run_startup_spatial_bootstrap()
 
+    assert events == ["images", "scene-matched-ais"]
     assert client.claims == 1
     assert client.row["status"] == "complete"
 
 
-def test_failed_startup_live_analysis_is_not_retried_automatically(monkeypatch):
+def test_failed_bootstrap_stops_startup_and_is_not_retried(monkeypatch):
     client = StartupSupabase()
-    attempts = []
+    events = []
 
-    def fail_analysis(zone_id, **_kwargs):
-        attempts.append(zone_id)
+    def fail_analysis():
+        events.append("scene-matched-ais")
         raise RuntimeError("live AIS unavailable")
 
     monkeypatch.setattr("src.supabase_client.supabase", client)
-    monkeypatch.setattr(
-        "src.spatial_config.load_active_zones",
-        lambda: [SimpleNamespace(zone_id="hormuz")],
-    )
-    monkeypatch.setattr("src.analysis_run.analyze_latest", fail_analysis)
+    monkeypatch.setattr(spatial_jobs, "_fetch_missing_zones", lambda: events.append("images"))
+    monkeypatch.setattr(spatial_jobs, "_analyze_latest_zones_with_live_ais", fail_analysis)
 
-    spatial_jobs._run_startup_live_analysis()
-    spatial_jobs._run_startup_live_analysis()
+    with pytest.raises(RuntimeError, match="live AIS unavailable"):
+        spatial_jobs.run_startup_spatial_bootstrap()
+    with pytest.raises(RuntimeError, match="will not be retried automatically"):
+        spatial_jobs.run_startup_spatial_bootstrap()
 
-    assert attempts == ["hormuz"]
+    assert events == ["images", "scene-matched-ais"]
     assert client.claims == 1
     assert client.row["status"] == "failed"
     assert "live AIS unavailable" in client.row["error"]

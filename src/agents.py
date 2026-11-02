@@ -24,6 +24,7 @@ class DebateState(TypedDict, total=False):
     market_context: dict[str, Any]
     previous_debates: list[dict[str, Any]]
     agent_accuracy: list[dict[str, Any]]
+    spatial_analysis: str
     initial_technical: str
     initial_supply_thesis: str
     initial_demand_thesis: str
@@ -42,12 +43,15 @@ MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
 META_API_TIMEOUT_SECONDS = 60
 META_MODEL_API_URL = "https://api.meta.ai/v1"
-META_MODEL_API_ENABLED = False
 
-def run_debate_if_due(*args, **kwargs):
-    import logging
-    logging.warning("run_debate_if_due called but debates are hardcoded off (META_MODEL_API_ENABLED=False). No debate executed.")
-    return None
+
+def run_debate_if_due():
+    if not _daily_debate_lock.acquire(blocking=False):
+        raise RuntimeError("A Strategy Desk debate is already running.")
+    try:
+        return run_agent_pipeline()
+    finally:
+        _daily_debate_lock.release()
 
 def get_recent_debates():
     try:
@@ -73,13 +77,18 @@ def get_recent_debates():
 
 META_MODEL_FALLBACKS = (
     "meta-models/muse-spark-open",
-    "llama-3.1-70b-instruct",
     "muse-spark-1.3",
 )
-DEBATE_REFRESH_INTERVAL = timedelta(days=1)
 
 
 AGENTS = {
+    "spatial": {
+        "name": "Spatial Intelligence Analyst",
+        "system": (
+            "You are an evidence-led maritime spatial-intelligence analyst. Separate direct "
+            "observations from implications and state data limitations."
+        ),
+    },
     "technical": {
         "name": "Technical Analysis",
         "system": (
@@ -119,7 +128,7 @@ _daily_debate_lock = Lock()
 
 
 def _meta_model_api_key() -> str | None:
-    return os.getenv("META_MODEL_API_KEY") or os.getenv("MODEL_API_KEY")
+    return os.getenv("META_MODEL_API_KEY")
 
 
 def _model_for_role(role: str) -> str:
@@ -138,12 +147,6 @@ def _meta_model_interaction(
     model: str,
     max_tokens: int,
 ) -> str:
-    if not META_MODEL_API_ENABLED:
-        raise RuntimeError(
-            "Meta Model API calls are disabled during development. "
-            "Enable META_MODEL_API_ENABLED in src/agents.py when the project is complete."
-        )
-
     api_key = _meta_model_api_key()
     if not api_key:
         raise RuntimeError(
@@ -151,6 +154,8 @@ def _meta_model_interaction(
         )
 
     base_url = os.getenv("META_MODEL_API_BASE_URL", META_MODEL_API_URL).rstrip("/")
+    if base_url != META_MODEL_API_URL:
+        raise RuntimeError("Strategy Desk agents may only use the Meta AI API.")
     response = requests.post(
         f"{base_url}/responses",
         headers={
@@ -658,6 +663,25 @@ def _gather_context_node(state: DebateState) -> dict[str, Any]:
     }
 
 
+def _spatial_analysis(state: DebateState) -> dict[str, str]:
+    prompt = (
+        f"{_context_prompt(state, AGENTS['spatial']['name'])}\n\n"
+        "Analyze every supplied active-zone satellite/AIS summary. Distinguish observed "
+        "vessels and AIS matches from uncertainty; identify evidence relevant to disruption, "
+        "congestion, and flow risk. Do not infer cargo, sanctions, destination, or intent. "
+        "Call out missing, stale, or unavailable zones explicitly. This assessment will inform "
+        "the separate supply and demand theses. Return a concise plain-text assessment."
+    )
+    assessment = _invoke(
+        AGENTS["spatial"]["system"],
+        prompt,
+        _model_for_role("spatial"),
+    ).strip()
+    if not assessment:
+        raise RuntimeError("Spatial Intelligence Analyst returned an empty assessment.")
+    return {"spatial_analysis": assessment}
+
+
 def _parse_agent_turn(response: str) -> dict[str, Any]:
     candidate = response.strip()
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.DOTALL | re.IGNORECASE)
@@ -702,12 +726,14 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
         "supply": (
             "Build an evidence-led supply thesis using commodity indicators, commercial shipping "
             "route density, bottleneck telemetry, inventories, trade volumes, and supply data. "
-            "Mention only factors present in the supplied context."
+            "Use the dedicated Spatial Intelligence assessment as evidence, distinguish "
+            "observations from implications, and mention only supplied evidence."
         ),
         "demand": (
             "Build an evidence-led demand thesis using commodity indicators, macroeconomic "
-            "conditions, inventories, trade volumes, and consumption data. Mention only factors "
-            "present in the supplied context."
+            "conditions, inventories, trade volumes, consumption data, and the dedicated Spatial "
+            "Intelligence assessment. Explain how observed shipping patterns may affect demand "
+            "signals without treating vessel counts as consumption. Mention only supplied evidence."
         ),
     }[role]
     prompt = (
@@ -715,6 +741,7 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
         f"TECHNICAL ANALYSIS:\n{state.get('initial_technical', '')}\n\n"
         f"SUPPLY THESIS:\n{state.get('initial_supply_thesis', '')}\n\n"
         f"DEMAND THESIS:\n{state.get('initial_demand_thesis', '')}\n\n"
+        f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', '')}\n\n"
         f"{role_instructions}\n{_AGENT_RESPONSE_FORMAT}"
     )
     turn = _parse_agent_turn(
@@ -882,6 +909,7 @@ def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
 def compile_trading_graph():
     workflow = StateGraph(DebateState)
     workflow.add_node("gather_context", _gather_context_node)
+    workflow.add_node("spatial_analysis", _spatial_analysis)
     workflow.add_node("technical_analysis", lambda state: _initial_analysis("technical", state))
     workflow.add_node("supply_thesis", lambda state: _initial_analysis("supply", state))
     workflow.add_node("demand_thesis", lambda state: _initial_analysis("demand", state))
@@ -891,7 +919,8 @@ def compile_trading_graph():
     workflow.add_node("demand_rebuttal_2", lambda state: _thesis_rebuttal("demand", 2, state))
     workflow.add_node("desk_signal_synthesis", _desk_signal_synthesis)
     workflow.set_entry_point("gather_context")
-    workflow.add_edge("gather_context", "technical_analysis")
+    workflow.add_edge("gather_context", "spatial_analysis")
+    workflow.add_edge("spatial_analysis", "technical_analysis")
     workflow.add_edge("technical_analysis", "supply_thesis")
     workflow.add_edge("supply_thesis", "demand_thesis")
     workflow.add_edge("demand_thesis", "supply_rebuttal_1")
@@ -914,7 +943,7 @@ def _transcript_for_state(state: dict[str, Any]) -> list[dict[str, str]]:
         ("demand", "demand-rebuttal-2", "demand_rebuttal_2"),
     )
     client_roles = {"technical": "technical", "supply": "bullish", "demand": "bearish"}
-    return [
+    transcript = [
         {
             "phase": phase,
             "agent": AGENTS[role]["name"],
@@ -923,6 +952,14 @@ def _transcript_for_state(state: dict[str, Any]) -> list[dict[str, str]]:
         }
         for role, phase, state_key in turns
     ]
+    if state.get("spatial_analysis"):
+        transcript.insert(0, {
+            "phase": "spatial-analysis",
+            "agent": AGENTS["spatial"]["name"],
+            "role": "spatial",
+            "message": state["spatial_analysis"],
+        })
+    return transcript
 
 
 def _record_prediction(
@@ -1056,6 +1093,7 @@ def run_agent_pipeline() -> dict[str, Any]:
         "market_context": _inject_spatial_telemetry(market_context, "Strait of Hormuz"),
         "previous_debates": previous_debates,
         "agent_accuracy": agent_accuracy,
+        "spatial_analysis": "",
         "initial_technical": "",
         "initial_supply_thesis": "",
         "initial_demand_thesis": "",
@@ -1129,5 +1167,3 @@ def _inject_spatial_telemetry(state: dict[str, Any], chokepoint: str = "Strait o
     state["spatial_telemetry"] = telemetry
     state["spatial_behaviour"] = telemetry.get("spatial_behaviour")
     return state
-
-

@@ -192,6 +192,8 @@ export default function App() {
   const [activeAnalysis, setActiveAnalysis] = useState(null);
   const [strategyDeskLoading, setStrategyDeskLoading] = useState(false);
   const [strategyDeskError, setStrategyDeskError] = useState('');
+  const [debateRunning, setDebateRunning] = useState(false);
+  const [debateRunError, setDebateRunError] = useState('');
   const [chartTimeframe, setChartTimeframe] = useState('1d');
   const [chartTimeZoom, setChartTimeZoom] = useState(1);
   const [chartPanOffset, setChartPanOffset] = useState(0);
@@ -413,6 +415,28 @@ export default function App() {
       controller.abort();
     };
   }, [activeTab]);
+
+  const runDebate = async () => {
+    if (debateRunning) return;
+    setDebateRunning(true);
+    setDebateRunError('');
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/strategy-desk/run`, { method: 'POST' });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.detail || 'Could not run the Strategy Desk debate.');
+      if (!result?.id) throw new Error('The Strategy Desk did not return a saved analysis.');
+      setActiveAnalysis(result);
+      setStrategyDeskAnalyses(current => [
+        result,
+        ...current.filter(analysis => analysis.id !== result.id),
+      ]);
+      setStrategyDeskError('');
+    } catch (error) {
+      setDebateRunError(error.message || 'Strategy Desk debate failed.');
+    } finally {
+      setDebateRunning(false);
+    }
+  };
 
   // Filter chokepoint data by selected tab ('hormuz' or 'bab')
   const filteredChokepoints = chokepointRecords.filter(r => {
@@ -1192,13 +1216,23 @@ export default function App() {
                 <h2>Brent crude <span>Strategy Desk</span></h2>
                 <p>Multi-agent market analysis · Instrument <b>Brent / BZ=F</b></p>
               </div>
-              <div className="daily-debate-status" aria-live="polite">
-                <span>{strategyDeskLoading ? 'LOADING SAVED ANALYSIS' : 'SCHEDULED ANALYSIS · 09:00 / 21:00 LONDON'}</span>
-                <span className="daily-debate-last-run">
-                  LAST ANALYSIS · {strategyDeskLoading && !activeAnalysis
-                    ? 'LOADING…'
-                    : formatLondonDateTime(activeAnalysis?.created_at)}
-                </span>
+              <div className="war-room-header-actions">
+                <div className="daily-debate-status" aria-live="polite">
+                  <span>{strategyDeskLoading ? 'LOADING SAVED ANALYSIS' : 'MANUAL ANALYSIS ONLY'}</span>
+                  <span className="daily-debate-last-run">
+                    LAST ANALYSIS · {strategyDeskLoading && !activeAnalysis
+                      ? 'LOADING…'
+                      : formatLondonDateTime(activeAnalysis?.created_at)}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="run-debate-button"
+                  onClick={runDebate}
+                  disabled={debateRunning || strategyDeskLoading}
+                >
+                  {debateRunning ? 'RUNNING DEBATE…' : 'RUN DEBATE'}
+                </button>
               </div>
             </div>
 
@@ -1209,6 +1243,13 @@ export default function App() {
             />
 
             {strategyDeskError && <div className="war-room-error" role="alert">{strategyDeskError}</div>}
+            {debateRunError && <div className="war-room-error" role="alert">{debateRunError}</div>}
+            {debateRunning && (
+              <div className="war-room-progress" role="status">
+                <span className="war-room-progress-pulse" />
+                Spatial Intelligence, supply, demand, technical, and synthesis agents are running…
+              </div>
+            )}
             {strategyDeskLoading && (
               <div className="war-room-progress" role="status">
                 <span className="war-room-progress-pulse" />
@@ -1237,7 +1278,9 @@ export default function App() {
                               ? 'SUPPLY THESIS'
                               : turn.role === 'bearish' || turn.phase === 'bearish-rebuttal'
                                 ? 'DEMAND THESIS'
-                                : turn.phase === 'initial-analysis'
+                                : turn.phase === 'spatial-analysis'
+                                  ? 'SPATIAL INTELLIGENCE'
+                                  : turn.phase === 'initial-analysis'
                                   ? 'OPENING THESIS'
                                   : 'MARKET ANALYSIS'}
                           </span>
@@ -1252,7 +1295,7 @@ export default function App() {
                     <h3>{strategyDeskLoading ? 'Preparing Strategy Desk' : 'No analyses recorded yet'}</h3>
                     <p>{strategyDeskLoading
                       ? 'Loading saved analysis from the backend.'
-                      : 'No Strategy Desk analysis has been saved yet. The backend checks for a scheduled run at 09:00 and 21:00 Europe/London.'}</p>
+                      : 'No Strategy Desk analysis has been saved yet. Press Run Debate to create one.'}</p>
                   </div>
                 )}
 

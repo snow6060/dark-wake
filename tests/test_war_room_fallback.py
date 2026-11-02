@@ -50,14 +50,14 @@ class StrategyDeskLoadingTests(unittest.TestCase):
 
     @patch("src.agents._meta_model_api_key")
     @patch("src.agents.requests.post")
-    def test_meta_model_request_is_blocked_by_default(self, post, api_key):
-        with self.assertRaisesRegex(RuntimeError, "disabled during development"):
+    def test_meta_model_request_requires_a_configured_key(self, post, api_key):
+        api_key.return_value = None
+        with self.assertRaisesRegex(RuntimeError, "API key is missing"):
             _meta_model_interaction("system", "prompt", "model", 1200)
 
-        api_key.assert_not_called()
+        api_key.assert_called_once_with()
         post.assert_not_called()
 
-    @patch("src.agents.META_MODEL_API_ENABLED", True)
     @patch("src.agents.requests.post")
     @patch("src.agents._meta_model_api_key", return_value="configured")
     def test_meta_model_uses_openai_compatible_responses_request(
@@ -106,7 +106,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
             ["requested-model", "meta-models/muse-spark-open"],
         )
 
-    @patch("src.agents.META_MODEL_API_ENABLED", True)
+
     @patch("src.agents.requests.post")
     @patch("src.agents._meta_model_api_key", return_value="sensitive-test-key")
     def test_meta_model_error_redacts_api_key(self, _api_key, post):
@@ -120,6 +120,15 @@ class StrategyDeskLoadingTests(unittest.TestCase):
             _meta_model_interaction("system", "prompt", "model", 1200)
 
         self.assertNotIn("sensitive-test-key", str(raised.exception))
+
+    @patch.dict("os.environ", {"META_MODEL_API_BASE_URL": "https://other-provider.example/v1"})
+    @patch("src.agents.requests.post")
+    @patch("src.agents._meta_model_api_key", return_value="configured")
+    def test_meta_model_rejects_non_meta_api_hosts(self, _api_key, post):
+        with self.assertRaisesRegex(RuntimeError, "only use the Meta AI API"):
+            _meta_model_interaction("system", "prompt", "model", 1200)
+
+        post.assert_not_called()
 
     @patch("src.agents._invoke", return_value=json.dumps({
         "analysis": "Complete technical assessment.",
@@ -358,6 +367,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
     @patch(
         "src.agents._invoke",
         side_effect=[
+            "Spatial assessment: shipping concentration is elevated; scene quality varies.",
             *[
                 json.dumps({
                     "analysis": f"Agent stage {index}",
@@ -405,7 +415,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertEqual(result["supply_direction"], "DOWN")
         self.assertEqual(result["demand_direction"], "UP")
         self.assertEqual(result["verdict"]["signal"], "HOLD")
-        self.assertEqual(invoke.call_count, 8)
+        self.assertEqual(invoke.call_count, 9)
 
     def test_strategy_desk_routes_are_documented_with_legacy_aliases(self):
         paths = {route.path for route in main.app.routes if hasattr(route, "path")}
@@ -451,94 +461,24 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         get_recent_debates.assert_called_once_with()
         run_debate.assert_not_called()
 
-    @patch("src.agents.META_MODEL_API_ENABLED", True)
     @patch("src.agents.run_agent_pipeline")
-    @patch("src.agents.get_recent_debates")
-    def test_due_check_reuses_analysis_under_twenty_four_hours(
-        self,
-        get_recent_debates,
-        run_agent_pipeline,
-    ):
-        recent = [{
-            "id": "recent-debate",
-            "created_at": (datetime.now(timezone.utc) - timedelta(hours=11)).isoformat(),
-            "market_price": 80.5,
-            "market_context": {
-                "price": 80.5,
-                "price_basis": "last_close",
-                "price_as_of": "2026-10-27",
-            },
-            "verdict": {
-                "signal": "HOLD",
-                "conviction": 50,
-                "support": 79,
-                "resistance": 82,
-                "rationale": "Balanced data.",
-            },
-        }]
-        get_recent_debates.return_value = recent
+    def test_manual_debate_runs_even_if_one_was_recently_saved(self, run_agent_pipeline):
+        run_agent_pipeline.return_value = {"id": "manual-run"}
 
-        result = run_debate_if_due()
-        self.assertIsNone(result)
-        run_agent_pipeline.assert_not_called()
+        self.assertEqual(run_debate_if_due(), {"id": "manual-run"})
+        run_agent_pipeline.assert_called_once_with()
 
-    @patch("src.agents.get_recent_debates")
-    def test_due_check_is_blocked_without_loading_history_when_disabled(
-        self,
-        get_recent_debates,
-    ):
-        result = run_debate_if_due()
-        self.assertIsNone(result)
-        get_recent_debates.assert_not_called()
-
-    def test_manual_analysis_endpoints_return_503_when_disabled(self):
-        for endpoint in (main.trigger_agent_analysis, main.run_strategy_desk_analysis):
-            with self.subTest(endpoint=endpoint.__name__):
-                result = endpoint()
-                if endpoint.__name__ == "trigger_agent_analysis":
-                    self.assertEqual(result["analysis"], None)
-                else:
-                    self.assertEqual(result, None)
-
-    @patch("src.agents.META_MODEL_API_ENABLED", True)
-    @patch("src.agents.run_agent_pipeline", return_value={"id": "new-debate"})
-    @patch("src.agents.get_recent_debates")
-    def test_due_check_runs_analysis_after_twenty_four_hours(
-        self,
-        get_recent_debates,
-        run_agent_pipeline,
-    ):
-        get_recent_debates.return_value = [{
-            "id": "old-debate",
-            "created_at": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
-        }]
-
-        self.assertEqual(run_debate_if_due(), None)
-        run_agent_pipeline.assert_not_called()
-
-    @patch("src.scheduler.META_MODEL_API_ENABLED", True)
-    @patch("src.scheduler.BackgroundScheduler")
-    def test_scheduler_runs_strategy_desk_daily_at_eight_london(
-        self,
-        scheduler_factory,
-    ):
-        from src.scheduler import start_scheduler
-
-        scheduler = scheduler_factory.return_value
-        with patch("builtins.print"):
-            start_scheduler()
-        strategy_desk_job = next(
-            call for call in scheduler.add_job.call_args_list
-            if call.kwargs.get("id") == "strategy_desk_daily_analysis"
+    @patch("main.run_debate_if_due", return_value={"id": "manual-run"})
+    def test_manual_analysis_endpoints_run_only_when_called(self, run_debate):
+        self.assertEqual(
+            main.trigger_agent_analysis()["analysis"],
+            {"id": "manual-run"},
         )
-
-        self.assertEqual(strategy_desk_job.args[1], "cron")
-        self.assertEqual(strategy_desk_job.kwargs["hour"], 8)
-        self.assertEqual(strategy_desk_job.kwargs["minute"], 0)
-        self.assertEqual(strategy_desk_job.kwargs["timezone"], "Europe/London")
+        self.assertEqual(main.run_strategy_desk_analysis(), {"id": "manual-run"})
+        self.assertEqual(run_debate.call_count, 2)
 
     @patch("src.scheduler.BackgroundScheduler")
-    def test_scheduler_does_not_register_strategy_desk_job_when_disabled(
+    def test_scheduler_never_registers_a_scheduled_strategy_debate(
         self,
         scheduler_factory,
     ):

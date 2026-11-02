@@ -11,8 +11,7 @@ JOBS: dict[str, Reporter] = {}
 _ACTIVE: dict[str, str] = {}
 _LOCK = threading.Lock()
 _WORK_LOCK = threading.Lock()
-_STARTUP_FETCH_LOCK = threading.Lock()
-_STARTUP_FETCH_STARTED = False
+_STARTUP_BOOTSTRAP_KEY = "spatial_image_ais_bootstrap_v2"
 
 
 class _BatchReporter:
@@ -125,56 +124,128 @@ def _fetch_missing_zones():
     from src.spatial_config import load_active_zones
     from src.supabase_client import supabase
 
-    with _WORK_LOCK:
-        if supabase is None:
-            log.warning("Startup spatial fetch skipped: Supabase is not configured.")
-            return
-        missing = []
-        for zone in load_active_zones():
-            snapshots = (
-                supabase.table("spatial_snapshots")
-                .select("id,image_url")
-                .eq("zone_id", zone.zone_id)
-                .limit(1)
-                .execute()
-                .data
-                or []
+    if supabase is None:
+        raise RuntimeError("One-time spatial bootstrap requires Supabase.")
+    zones = load_active_zones()
+    if not zones:
+        raise RuntimeError("One-time spatial bootstrap found no active zones.")
+
+    missing = []
+    for zone in zones:
+        snapshots = (
+            supabase.table("spatial_snapshots")
+            .select("id,image_url")
+            .eq("zone_id", zone.zone_id)
+            .order("acquired_at", desc=True)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not snapshots or not snapshots[0].get("image_url"):
+            missing.append(zone.zone_id)
+    if not missing:
+        log.info("One-time spatial bootstrap: every active zone already has an image.")
+        return
+
+    log.info("One-time spatial bootstrap fetching missing zones: %s", ", ".join(missing))
+    results = run_fetch_cycle(zone_ids=missing, limit=1)
+    failed = [result for result in results if result.get("status") == "error"]
+    if failed:
+        details = "; ".join(
+            f"{item.get('zone')}: {item.get('error', 'satellite fetch failed')}" for item in failed
+        )
+        raise RuntimeError(f"One-time satellite image fetch failed: {details}")
+
+    for zone_id in missing:
+        snapshots = (
+            supabase.table("spatial_snapshots")
+            .select("id,image_url")
+            .eq("zone_id", zone_id)
+            .order("acquired_at", desc=True)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not snapshots or not snapshots[0].get("image_url"):
+            raise RuntimeError(
+                f"One-time satellite fetch completed without storing an image for '{zone_id}'."
             )
-            if not snapshots or not snapshots[0].get("image_url"):
-                missing.append(zone.zone_id)
-        if not missing:
-            log.info("Startup spatial fetch skipped: every active zone has a stored image.")
-            return
-        log.info("Startup spatial fetch checking zones without images: %s", ", ".join(missing))
-        results = run_fetch_cycle(zone_ids=missing, limit=1)
-        for result in results:
-            log.info("Startup spatial fetch %s: %s", result.get("zone"), result.get("status"))
 
 
-def _run_startup_live_analysis():
+def _analyze_latest_zones_with_live_ais():
     from src.analysis_run import analyze_latest
     from src.spatial_config import load_active_zones
     from src.supabase_client import supabase
 
     if supabase is None:
-        log.warning("Startup live AIS analysis skipped: Supabase is not configured.")
-        return
+        raise RuntimeError("One-time live AIS analysis requires Supabase.")
+    zones = load_active_zones()
+    if not zones:
+        raise RuntimeError("One-time live AIS analysis found no active zones.")
+    for zone in zones:
+        snapshots = (
+            supabase.table("spatial_snapshots")
+            .select("id,image_url,acquired_at")
+            .eq("zone_id", zone.zone_id)
+            .order("acquired_at", desc=True)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not snapshots or not snapshots[0].get("image_url"):
+            raise RuntimeError(
+                f"Cannot fetch scene-matched AIS for '{zone.zone_id}': latest satellite image is missing."
+            )
+        analyze_latest(zone.zone_id, sam_enabled=True)
+        log.info(
+            "One-time scene-matched live AIS analysis completed for %s (%s).",
+            zone.zone_id,
+            snapshots[0].get("acquired_at"),
+        )
+
+
+def run_startup_spatial_bootstrap():
+    from src.supabase_client import supabase
+
+    if supabase is None:
+        raise RuntimeError("One-time spatial bootstrap requires Supabase.")
 
     state_table = supabase.table("spatial_startup_state")
     state = (
         state_table.select("status")
-        .eq("startup_key", "live_ais_bootstrap")
+        .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
         .limit(1)
         .execute()
         .data
         or []
     )
     if not state:
-        log.error("Startup live AIS analysis not started: run sql/clear_mock_spatial_ais.sql first.")
+        state_table.insert({
+            "startup_key": _STARTUP_BOOTSTRAP_KEY,
+            "status": "pending",
+        }).execute()
+        state = (
+            state_table.select("status")
+            .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not state:
+            raise RuntimeError("Could not initialize the one-time spatial bootstrap state.")
+    status = state[0]["status"]
+    if status == "complete":
+        log.info("One-time spatial bootstrap already completed; skipping.")
         return
-    if state[0]["status"] != "pending":
-        log.info("Startup live AIS analysis already attempted (status: %s).", state[0]["status"])
-        return
+    if status != "pending":
+        raise RuntimeError(
+            f"One-time spatial bootstrap is {status}; it will not be retried automatically. "
+            "Inspect spatial_startup_state before restarting."
+        )
 
     claim = (
         state_table.update({
@@ -182,7 +253,7 @@ def _run_startup_live_analysis():
             "started_at": datetime.now(timezone.utc).isoformat(),
             "error": None,
         })
-        .eq("startup_key", "live_ais_bootstrap")
+        .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
         .eq("status", "pending")
         .select("startup_key")
         .execute()
@@ -190,64 +261,39 @@ def _run_startup_live_analysis():
         or []
     )
     if not claim:
-        log.info("Startup live AIS analysis was claimed by another backend instance.")
-        return
+        raise RuntimeError(
+            "Another backend instance already claimed the one-time spatial bootstrap."
+        )
 
-    failures = []
     try:
         with _WORK_LOCK:
-            for zone in load_active_zones():
-                try:
-                    snapshots = (
-                        supabase.table("spatial_snapshots")
-                        .select("id")
-                        .eq("zone_id", zone.zone_id)
-                        .order("acquired_at", desc=True)
-                        .limit(1)
-                        .execute()
-                        .data
-                        or []
-                    )
-                    if not snapshots:
-                        log.info("Startup live AIS analysis skipped %s: no stored image.", zone.zone_id)
-                        continue
-                    analyze_latest(zone.zone_id, sam_enabled=True)
-                    log.info("Startup live AIS analysis completed for %s.", zone.zone_id)
-                except Exception as exc:
-                    failures.append(f"{zone.zone_id}: {exc}")
-                    log.exception("Startup live AIS analysis failed for %s.", zone.zone_id)
-    except Exception as exc:
-        failures.append(f"startup: {exc}")
-        log.exception("Could not load active zones for startup live AIS analysis.")
-
-    status = "failed" if failures else "complete"
-    update = {
-        "status": status,
-        "completed_at": datetime.now(timezone.utc).isoformat(),
-        "error": "; ".join(failures)[:2000] if failures else None,
-    }
-    state_table.update(update).eq("startup_key", "live_ais_bootstrap").eq("status", "running").execute()
-    if failures:
-        log.error("Startup live AIS analysis completed with errors: %s", "; ".join(failures))
-    else:
-        log.info("One-time startup live AIS analysis completed.")
-
-
-def start_missing_zone_fetch():
-    global _STARTUP_FETCH_STARTED
-    with _STARTUP_FETCH_LOCK:
-        if _STARTUP_FETCH_STARTED:
-            return
-        _STARTUP_FETCH_STARTED = True
-    def run():
-        try:
             _fetch_missing_zones()
-        except Exception:
-            log.exception("Startup spatial fetch failed.")
+            _analyze_latest_zones_with_live_ais()
+    except Exception as exc:
         try:
-            _run_startup_live_analysis()
+            state_table.update({
+                "status": "failed",
+                "completed_at": datetime.now(timezone.utc).isoformat(),
+                "error": str(exc)[:2000],
+            }).eq("startup_key", _STARTUP_BOOTSTRAP_KEY).eq("status", "running").execute()
         except Exception:
-            log.exception("One-time startup live AIS analysis failed.")
+            log.exception("Could not persist the one-time spatial bootstrap failure state.")
+        log.exception("One-time spatial bootstrap failed; backend startup will stop.")
+        raise RuntimeError(f"One-time spatial bootstrap failed: {exc}") from exc
 
-    thread = threading.Thread(target=run, name="spatial-startup-tasks", daemon=True)
-    thread.start()
+    completed = (
+        state_table.update({
+            "status": "complete",
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+        .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
+        .eq("status", "running")
+        .select("startup_key")
+        .execute()
+        .data
+        or []
+    )
+    if not completed:
+        raise RuntimeError("Could not mark the one-time spatial bootstrap complete.")
+    log.info("One-time satellite-image and scene-matched AIS bootstrap completed.")

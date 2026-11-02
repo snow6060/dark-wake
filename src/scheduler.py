@@ -3,7 +3,6 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.background import BackgroundScheduler
 from src.ingestion import fetch_straits_live_chokepoint_data, fetch_and_store_rss_headlines
 from src.straits_live import fetch_straits_live_hormuz_data
-from src.agents import META_MODEL_API_ENABLED, run_debate_if_due
 import os
 
 def start_scheduler():
@@ -28,19 +27,5 @@ def start_scheduler():
     )
     # Run RSS headline scraping every 10 minutes (regulated from 60s spam)
     scheduler.add_job(fetch_and_store_rss_headlines, 'interval', minutes=10, id='rss_fetch_job', replace_existing=True)
-    if META_MODEL_API_ENABLED:
-        # Refresh the Strategy Desk once daily one hour before the London market open.
-        scheduler.add_job(
-            run_debate_if_due,
-            'cron',
-            hour=8,
-            minute=0,
-            timezone='Europe/London',
-            id='strategy_desk_daily_analysis',
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
-
     scheduler.start()
-    print("⏰ Background APScheduler initialized for straits.live, RSS, and Strategy Desk analysis.")
+    print("⏰ Background APScheduler initialized for straits.live, RSS, and spatial imagery.")

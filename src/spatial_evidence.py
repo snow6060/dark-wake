@@ -5,7 +5,6 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from src.spatial_config import PRIMARY_ZONE_IDS
 from src.supabase_client import supabase
 
 
@@ -99,7 +98,7 @@ def build_spatial_evidence(zone_rows: list[dict[str, Any]], now: datetime | None
         s = r.get("summary") or {}
         flags += int(s.get("dark") or 0) + int(s.get("ghost") or 0) + int(s.get("displaced") or 0)
     global_line = (
-        f"{len(usable)} of {len(zone_rows)} primary zones have a usable scene"
+        f"{len(usable)} of {len(zone_rows)} active zones have a usable scene"
         + (f"; oldest scene {max(ages):.0f} h." if ages else ".")
         + f" Combined dark/ghost/displaced flags: {flags}."
     )
@@ -154,15 +153,15 @@ def load_zone_evidence_rows() -> list[dict[str, Any]]:
     zones = (
         supabase.table("spatial_zones")
         .select("zone_id,display_name")
-        .in_("zone_id", list(PRIMARY_ZONE_IDS))
+        .eq("active", True)
+        .order("sort_order")
         .execute()
         .data
         or []
     )
-    by_id = {z["zone_id"]: z for z in zones}
     rows = []
-    for zid in PRIMARY_ZONE_IDS:
-        z = by_id.get(zid, {"zone_id": zid, "display_name": zid})
+    for z in zones:
+        zid = z["zone_id"]
         snapshots = (
             supabase.table("spatial_snapshots")
             .select("id,cloud_pct,acquired_at,status")

@@ -905,6 +905,35 @@ body {
   border-bottom: 1px solid var(--war-line);
 }
 
+.war-room-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.run-debate-button {
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid var(--war-cyan);
+  border-radius: 7px;
+  color: #041114;
+  background: var(--war-cyan);
+  font: 700 0.68rem "Cascadia Code", Consolas, monospace;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.run-debate-button:hover:not(:disabled) {
+  filter: brightness(1.12);
+  box-shadow: 0 0 18px rgba(94, 231, 242, 0.24);
+}
+
+.run-debate-button:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
 .war-room-eyebrow, .war-section-index, .war-round-count {
   color: #83a3a9;
   font-size: 0.65rem;
@@ -1368,6 +1397,7 @@ body {
 @media (max-width: 600px) {
   .war-room { padding: 13px; }
   .war-room-header { align-items: flex-start; flex-direction: column; }
+  .war-room-header-actions { width: 100%; align-items: stretch; flex-direction: column; }
   .daily-debate-status { align-self: stretch; }
   .war-panel-heading { padding: 14px; }
   .war-round-count { font-size: 0.5rem; }

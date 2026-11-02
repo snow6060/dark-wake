@@ -76,19 +76,18 @@ npm run tauri dev
 
 For browser-only frontend development, use `npm run dev`. By default, the client connects to the local API at `http://localhost:8000`.
 
-#### Meta Model API disabled during development
+#### Strategy Desk and startup data
 
-Meta Model API requests and Strategy Desk debate runs are hard-disabled in the
-backend while the project is under development. Starting the backend still
-allows other data ingestion and frontend testing, but it will not call the Meta
-Model API or automatically schedule a Strategy Desk run. The manual run
-endpoints also return an error while disabled; loading saved debate history is
-still available.
+The Strategy Desk only calls the Meta AI API when **Run Debate** is pressed.
+Debates are not scheduled, and their API host is restricted to
+`https://api.meta.ai/v1`.
 
-When the project is complete and Meta Model API calls are intended, change
-`META_MODEL_API_ENABLED` from `False` to `True` in [`src/agents.py`](./src/agents.py).
-This enables Meta Model requests, manual debate runs, and the scheduled daily
-run. Keep it `False` during development and testing.
+On the first backend startup, `spatial_startup_state.spatial_image_ais_bootstrap_v2`
+is claimed once. Startup fetches images for active zones without one, then
+analyzes each zone against AIS history for that image's acquisition time.
+RSS and telemetry ingestion and the periodic scheduler start only after this
+one-time sequence completes. A failure marks the bootstrap `failed` and stops
+backend startup; it is not retried automatically.
 
 ## Build and sign the Windows installer with SignPath
 
@@ -211,8 +210,7 @@ switch remains supported.
 
 ## Pending Launch Toggles / Pre-Submission Checklist
 
-- [ ] Keep `META_MODEL_API_ENABLED=False` during the handover; do not make live Meta API calls.
-- [ ] Re-enable live debate logic only after explicit approval and verification of backend configuration.
+- [x] Strategy Desk calls the Meta AI API only from the manual **Run Debate** action.
 - [x] Wire Spatial Intelligence V2 to the Sentinel-2/AIS backend; local frontend production build succeeds.
 - [ ] Validate browser interactions and persist an analysis after the Supabase `spatial_analysis` table is present.
 - [ ] Remove the legacy mock tab and placeholder imagery after V2 is verified; SAM 3.1 video tracking is not implemented.
@@ -226,4 +224,4 @@ switch remains supported.
 - IMF PortWatch provides historical vessel and oil-flow estimates.
 - The Strategy Desk uses the Meta Model API and stores its analyses in Supabase.
 
-The Strategy Desk refreshes once daily at 08:00 Europe/London time. London daylight-saving changes are handled by the scheduler.
+The Strategy Desk runs only when **Run Debate** is pressed; it has no scheduled debate job.

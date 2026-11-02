@@ -60,6 +60,8 @@ def test_batch_start_reserves_each_zone_for_one_job(monkeypatch):
 
 
 def test_startup_fetch_only_fetches_zones_without_snapshots(monkeypatch):
+    stored = {"fujairah": True}
+
     class Query:
         def __init__(self, zone_id=None):
             self.zone_id = zone_id
@@ -71,11 +73,18 @@ def test_startup_fetch_only_fetches_zones_without_snapshots(monkeypatch):
             self.zone_id = zone_id
             return self
 
+        def order(self, *_args, **_kwargs):
+            return self
+
         def limit(self, _count):
             return self
 
         def execute(self):
-            rows = [{"id": 1, "image_url": "https://example.test/fujairah.jpg"}] if self.zone_id == "fujairah" else []
+            rows = (
+                [{"id": 1, "image_url": f"https://example.test/{self.zone_id}.jpg"}]
+                if stored.get(self.zone_id)
+                else []
+            )
             return SimpleNamespace(data=rows)
 
     class FakeSupabase:
@@ -83,6 +92,12 @@ def test_startup_fetch_only_fetches_zones_without_snapshots(monkeypatch):
             return Query()
 
     fetched = []
+
+    def fake_fetch(**kwargs):
+        fetched.append(kwargs)
+        stored["hormuz"] = True
+        return [{"zone": "hormuz", "status": "ok", "stored": [{"scene": "scene"}]}]
+
     monkeypatch.setattr("src.supabase_client.supabase", FakeSupabase())
     monkeypatch.setattr(
         "src.spatial_config.load_active_zones",
@@ -90,7 +105,7 @@ def test_startup_fetch_only_fetches_zones_without_snapshots(monkeypatch):
     )
     monkeypatch.setattr(
         "src.satellite_fetch.run_fetch_cycle",
-        lambda **kwargs: fetched.append(kwargs) or [{"zone": "hormuz", "status": "ok"}],
+        fake_fetch,
     )
 
     spatial_jobs._fetch_missing_zones()

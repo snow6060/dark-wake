@@ -1,4 +1,5 @@
 import os
+import asyncio
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -35,23 +36,12 @@ from src.market_data import get_brent_market_snapshot
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    # Phase 1: immediate spatial ingestion if table empty
-    if os.getenv("LEGACY_SPATIAL_FETCH", "false").lower() == "true":
-        try:
-            from src.satellite_fetch import run_fetch_cycle
-            run_fetch_cycle(limit=1)
-        except Exception:
-            pass
+    from src.spatial_jobs import run_startup_spatial_bootstrap
+    await asyncio.to_thread(run_startup_spatial_bootstrap)
     fetch_straits_live_chokepoint_data()
     fetch_straits_live_hormuz_data()
     fetch_and_store_rss_headlines()
     start_scheduler()
-    try:
-        from src.spatial_jobs import start_missing_zone_fetch
-        start_missing_zone_fetch()
-    except Exception:
-        import logging
-        logging.exception("Could not start the missing-zone satellite fetch.")
     yield
 
 app = FastAPI(
