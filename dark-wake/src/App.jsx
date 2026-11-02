@@ -29,6 +29,100 @@ const formatDeskAgentName = name => ({
   'Risk Manager': 'Desk Signal & Risk Synthesis',
 }[name] || name);
 
+const formatCurrency = value => {
+  const price = Number(value);
+  return value !== null && value !== undefined && Number.isFinite(price) && price > 0
+    ? `$${price.toFixed(2)}`
+    : '—';
+};
+
+function DeskSignalPanel({ analysis, marketData, loading, error }) {
+  const verdict = analysis?.verdict;
+  const signal = String(verdict?.signal || 'HOLD').toLowerCase();
+  const marketPriceLabel = marketData?.price_basis === 'intraday'
+    ? 'LIVE SNAPSHOT'
+    : marketData?.price_basis === 'last_close'
+      ? 'LAST CLOSE'
+      : 'QUOTE UNAVAILABLE';
+  const analysisDate = analysis?.created_at ? new Date(analysis.created_at) : null;
+
+  return (
+    <aside className="verdict-panel">
+      <div className="war-panel-heading">
+        <div>
+          <span className="war-section-index">02 / DESK SIGNAL &amp; RISK SYNTHESIS</span>
+          <h3>Executive Synthesis</h3>
+        </div>
+        <span className="verdict-shield">◆</span>
+      </div>
+
+      {verdict ? (
+        <>
+          <div className={`trade-signal signal-${signal}`}>
+            <span className="signal-label">DESK ACTION</span>
+            <strong>{verdict.signal || 'HOLD'}</strong>
+            <span className="signal-confidence">{verdict.conviction ?? '—'}% conviction</span>
+          </div>
+          <div className="verdict-price">
+            <div><span>BRENT / BZ=F</span><strong>{formatCurrency(marketData?.price)}</strong></div>
+            <span>{marketPriceLabel}</span>
+          </div>
+          {marketData?.market_is_closed && (
+            <p className="market-closed-note">
+              Market closed · using the latest close
+              {marketData.price_as_of ? ` from ${marketData.price_as_of.slice(0, 10)}` : ''}
+            </p>
+          )}
+          <div className="direction-grid">
+            <div><span>SHORT-TERM</span><b className={`trend-${String(verdict.short_term_trend || 'neutral').toLowerCase()}`}>{verdict.short_term_trend || '—'}</b></div>
+            <div><span>LONG-TERM</span><b className={`trend-${String(verdict.long_term_trend || 'neutral').toLowerCase()}`}>{verdict.long_term_trend || '—'}</b></div>
+          </div>
+          <div className="price-levels">
+            <div className="level-row">
+              <span><i className="level-dot support-dot" /> SUPPORT FLOOR</span>
+              <strong>{formatCurrency(verdict.support)}</strong>
+            </div>
+            <div className="level-track"><span className="level-marker support-marker" /></div>
+            <div className="level-row">
+              <span><i className="level-dot resistance-dot" /> RESISTANCE CEILING</span>
+              <strong>{formatCurrency(verdict.resistance)}</strong>
+            </div>
+            <div className="level-track"><span className="level-marker resistance-marker" /></div>
+          </div>
+          {[['ENTRY', verdict.entry], ['STOP LOSS', verdict.stop_loss], ['TAKE PROFIT', verdict.take_profit]]
+            .some(([, value]) => value !== null && value !== undefined) && (
+            <div className="risk-parameters">
+              {[
+                ['ENTRY', verdict.entry],
+                ['STOP LOSS', verdict.stop_loss],
+                ['TAKE PROFIT', verdict.take_profit],
+              ].filter(([, value]) => value !== null && value !== undefined).map(([label, value]) => (
+                <div key={label}><span>{label}</span><b>{formatCurrency(value)}</b></div>
+              ))}
+            </div>
+          )}
+          {verdict.risk_factors?.length > 0 && (
+            <div className="risk-factors">
+              <span className="war-section-index">SUPPLY CHAIN VOLATILITY WATCH</span>
+              {verdict.risk_factors.map((factor, index) => <p key={index}>! {factor}</p>)}
+            </div>
+          )}
+          <div className="verdict-footer">
+            <span>DATA: {analysis.market_context?.telemetry_source || 'TELEMETRY'} + {analysis.market_context?.news_source || 'NEWS'}</span>
+            <span>{analysisDate && !Number.isNaN(analysisDate.getTime()) ? analysisDate.toLocaleString() : 'DATE UNAVAILABLE'}</span>
+          </div>
+        </>
+      ) : (
+        <div className="verdict-placeholder">
+          <div>◆</div>
+          <p>{loading ? 'Loading Strategy Desk synthesis.' : error ? 'Strategy Desk synthesis unavailable.' : 'Awaiting Strategy Desk synthesis.'}</p>
+          <span>{error || 'The desk synthesizes technical evidence with the supply and demand theses.'}</span>
+        </div>
+      )}
+    </aside>
+  );
+}
+
 const SPATIAL_LOCATIONS = {
   hormuz: { name: 'Strait of Hormuz', type: 'chokepoint', region: 'Persian Gulf', coords: '26.42° N, 56.51° E' },
   bab: { name: 'Bab el-Mandeb', type: 'chokepoint', region: 'Red Sea', coords: '12.65° N, 43.42° E' },
@@ -64,7 +158,7 @@ const DEFAULT_SPATIAL_TELEMETRY = {
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('news');
-  const [brentData, setBrentData] = useState({ price: '100.95', change_pct: '-0.61' });
+  const [brentData, setBrentData] = useState({ price: null, change_pct: null });
   const [articles, setArticles] = useState([]);
   const [showAllModal, setShowAllModal] = useState(false);
   const [strategyDeskAnalyses, setStrategyDeskAnalyses] = useState([]);
@@ -169,10 +263,19 @@ export default function App() {
       fetch(`${API_BASE_URL}/api/market/prices`)
         .then(res => res.json())
         .then(data => {
-          if (data.price) {
-            setBrentData(data);
-            if (Array.isArray(data.history) && data.history.length > 0) {
-              setPriceHistory(data.history);
+          const price = Number(data?.price);
+          if (Number.isFinite(price) && price > 0) {
+            const changePct = data.change_pct == null ? Number.NaN : Number(data.change_pct);
+            setBrentData({
+              ...data,
+              price,
+              change_pct: Number.isFinite(changePct) ? changePct : null,
+            });
+            if (Array.isArray(data.history)) {
+              const validHistory = data.history
+                .filter(point => Number.isFinite(Number(point?.price)) && Number(point.price) > 0)
+                .map(point => ({ ...point, price: Number(point.price) }));
+              if (validHistory.length > 0) setPriceHistory(validHistory);
             }
           }
         })
@@ -213,7 +316,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (activeTab !== 'strategy-desk') return;
+    if (activeTab !== 'strategy-desk' && activeTab !== 'news') return;
     let cancelled = false;
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 20000);
@@ -347,15 +450,19 @@ export default function App() {
               <div className="card">
                 <p className="card-label">BrentCash (BZ=F)</p>
                 <p className="card-value emerald">
-                  ${brentData.price}{' '}
-                  <span className={Number(brentData.change_pct) >= 0 ? 'text-emerald' : 'text-rose'}>
-                    {Number(brentData.change_pct) >= 0 ? `+${brentData.change_pct}%` : `${brentData.change_pct}%`}
-                  </span>
+                  {formatCurrency(brentData.price)}{' '}
+                  {Number.isFinite(brentData.change_pct) && (
+                    <span className={brentData.change_pct >= 0 ? 'text-emerald' : 'text-rose'}>
+                      {brentData.change_pct >= 0 ? `+${brentData.change_pct}%` : `${brentData.change_pct}%`}
+                    </span>
+                  )}
                 </p>
                 <span className="source-tag">
-                  {brentData.price_basis === 'last_close'
-                    ? `Yahoo Finance · Last close ${brentData.price_as_of || ''}`
-                    : 'Source: Yahoo Finance'}
+                  {brentData.price == null
+                    ? 'Yahoo Finance · Quote unavailable'
+                    : brentData.price_basis === 'last_close'
+                      ? `Yahoo Finance · Last close ${brentData.price_as_of || ''}`
+                      : 'Source: Yahoo Finance'}
                 </span>
               </div>
               <div className="card">
@@ -439,32 +546,41 @@ export default function App() {
                 </div>
               </div>
 
-              {/* News Feed Panel */}
-              <div className="news-panel">
-                <div className="panel-header-flex">
-                  <h3 className="panel-title">Energy Market & Supply Chain News</h3>
-                  <button onClick={() => setShowAllModal(true)} className="view-all-btn">
-                    View All ({articles.length})
-                  </button>
-                </div>
-                <div className="news-feed-list">
-                  {articles.slice(0, 10).map((art, idx) => (
-                    <div key={idx} className="news-item">
-                      <div className="news-meta">
-                        <span className="news-source">{art.source}</span>
-                        <span className="news-time">{art.time_ago || 'Just now'}</span>
+              <div className="news-sidebar">
+                {/* News Feed Panel */}
+                <div className="news-panel">
+                  <div className="panel-header-flex">
+                    <h3 className="panel-title">Energy Market & Supply Chain News</h3>
+                    <button onClick={() => setShowAllModal(true)} className="view-all-btn">
+                      View All ({articles.length})
+                    </button>
+                  </div>
+                  <div className="news-feed-list">
+                    {articles.slice(0, 10).map((art, idx) => (
+                      <div key={idx} className="news-item">
+                        <div className="news-meta">
+                          <span className="news-source">{art.source}</span>
+                          <span className="news-time">{art.time_ago || 'Just now'}</span>
+                        </div>
+                        <h4 className="news-headline">
+                          <a href={art.link} target="_blank" rel="noopener noreferrer" className="news-link">
+                            {art.title}
+                          </a>
+                        </h4>
+                        <span className={`sentiment-badge ${art.sentiment?.toLowerCase() || 'neutral'}`}>
+                          {art.sentiment || 'Neutral'}
+                        </span>
                       </div>
-                      <h4 className="news-headline">
-                        <a href={art.link} target="_blank" rel="noopener noreferrer" className="news-link">
-                          {art.title}
-                        </a>
-                      </h4>
-                      <span className={`sentiment-badge ${art.sentiment?.toLowerCase() || 'neutral'}`}>
-                        {art.sentiment || 'Neutral'}
-                      </span>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
+
+                <DeskSignalPanel
+                  analysis={activeAnalysis}
+                  marketData={brentData}
+                  loading={strategyDeskLoading}
+                  error={strategyDeskError}
+                />
               </div>
             </div>
 
@@ -561,7 +677,7 @@ export default function App() {
           </div>
         )}
 
-        {import.meta.env.VITE_SPATIAL_V2 === "true" ? <SpatialIntelligence /> : (
+        {activeTab === 'spatial-intelligence' && (SPATIAL_V2 ? <SpatialIntelligence /> : (
           <div className="spatial-tab space-y-6">
             {/* Header */}
             <div className="spatial-header">
@@ -831,7 +947,7 @@ export default function App() {
               Satellite imagery sourced from ESA Copernicus Sentinel-2 via AWS Earth Search open STAC catalog. SAM 3.1 vessel identification and congestion indices are informational models for research purposes and do not constitute real-time vessel navigation guarantees.
             </div>
           </div>
-        )}
+        ))}
 
         {activeTab === 'strategy-desk' && (
           <section className="war-room">
@@ -940,80 +1056,12 @@ export default function App() {
                 )}
               </section>
 
-              <aside className="verdict-panel">
-                <div className="war-panel-heading">
-                  <div>
-                    <span className="war-section-index">02 / DESK SIGNAL & RISK SYNTHESIS</span>
-                    <h3>Executive Synthesis</h3>
-                  </div>
-                  <span className="verdict-shield">◆</span>
-                </div>
-
-                {activeAnalysis?.verdict ? (
-                  <>
-                    <div className={`trade-signal signal-${activeAnalysis.verdict.signal.toLowerCase()}`}>
-                      <span className="signal-label">DESK ACTION</span>
-                      <strong>{activeAnalysis.verdict.signal}</strong>
-                      <span className="signal-confidence">{activeAnalysis.verdict.conviction}% conviction</span>
-                    </div>
-                    <div className="verdict-price">
-                      <div><span>BRENT / BZ=F</span><strong>${Number(activeAnalysis.market_price).toFixed(2)}</strong></div>
-                      <span>{activeAnalysis.market_context?.price_basis === 'intraday' ? 'LIVE SNAPSHOT' : 'LAST CLOSE'}</span>
-                    </div>
-                    {activeAnalysis.market_context?.market_is_closed && (
-                      <p className="market-closed-note">
-                        Market closed for the weekend · using the last close
-                        {activeAnalysis.market_context.price_as_of
-                          ? ` from ${activeAnalysis.market_context.price_as_of.slice(0, 10)}`
-                          : ''}
-                      </p>
-                    )}
-                    <div className="direction-grid">
-                      <div><span>SHORT-TERM</span><b className={`trend-${activeAnalysis.verdict.short_term_trend.toLowerCase()}`}>{activeAnalysis.verdict.short_term_trend}</b></div>
-                      <div><span>LONG-TERM</span><b className={`trend-${activeAnalysis.verdict.long_term_trend.toLowerCase()}`}>{activeAnalysis.verdict.long_term_trend}</b></div>
-                    </div>
-                    <div className="price-levels">
-                      <div className="level-row">
-                        <span><i className="level-dot support-dot" /> SUPPORT FLOOR</span>
-                        <strong>${Number(activeAnalysis.verdict.support).toFixed(2)}</strong>
-                      </div>
-                      <div className="level-track"><span className="level-marker support-marker" /></div>
-                      <div className="level-row">
-                        <span><i className="level-dot resistance-dot" /> RESISTANCE CEILING</span>
-                        <strong>${Number(activeAnalysis.verdict.resistance).toFixed(2)}</strong>
-                      </div>
-                      <div className="level-track"><span className="level-marker resistance-marker" /></div>
-                    </div>
-                    {(activeAnalysis.verdict.entry || activeAnalysis.verdict.stop_loss || activeAnalysis.verdict.take_profit) && (
-                      <div className="risk-parameters">
-                        {[
-                          ['ENTRY', activeAnalysis.verdict.entry],
-                          ['STOP LOSS', activeAnalysis.verdict.stop_loss],
-                          ['TAKE PROFIT', activeAnalysis.verdict.take_profit],
-                        ].filter(([, value]) => value !== null && value !== undefined).map(([label, value]) => (
-                          <div key={label}><span>{label}</span><b>${Number(value).toFixed(2)}</b></div>
-                        ))}
-                      </div>
-                    )}
-                    {activeAnalysis.verdict.risk_factors?.length > 0 && (
-                      <div className="risk-factors">
-                        <span className="war-section-index">SUPPLY CHAIN VOLATILITY WATCH</span>
-                        {activeAnalysis.verdict.risk_factors.map((factor, index) => <p key={index}>! {factor}</p>)}
-                      </div>
-                    )}
-                    <div className="verdict-footer">
-                      <span>DATA: {activeAnalysis.market_context?.telemetry_source || 'TELEMETRY'} + {activeAnalysis.market_context?.news_source || 'NEWS'}</span>
-                      <span>{new Date(activeAnalysis.created_at).toLocaleString()}</span>
-                    </div>
-                  </>
-                ) : (
-                  <div className="verdict-placeholder">
-                    <div>◆</div>
-                    <p>Awaiting Strategy Desk synthesis.</p>
-                    <span>The desk synthesizes technical evidence with the supply and demand theses.</span>
-                  </div>
-                )}
-              </aside>
+              <DeskSignalPanel
+                analysis={activeAnalysis}
+                marketData={brentData}
+                loading={strategyDeskLoading}
+                error={strategyDeskError}
+              />
             </div>
             <div className="war-room-disclaimer">For energy-market intelligence and research only. Not investment advice. Market data and model conclusions can be incomplete or delayed.</div>
           </section>
