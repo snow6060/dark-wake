@@ -123,6 +123,26 @@ function DeskSignalPanel({ analysis, marketData, loading, error }) {
   );
 }
 
+function DeskSynthesisAnalysis({ analysis, loading, error }) {
+  const rationale = analysis?.verdict?.rationale;
+
+  return (
+    <section className="desk-synthesis-analysis" aria-live="polite">
+      <div className="desk-synthesis-heading">
+        <h3><span aria-hidden="true">●</span> Desk Signal &amp; Risk Synthesis</h3>
+        <span>DESK SYNTHESIS</span>
+      </div>
+      <p>
+        {rationale || (loading
+          ? 'Loading the latest Desk Signal & Risk Synthesis analysis…'
+          : error
+            ? 'Desk Signal & Risk Synthesis is unavailable.'
+            : 'No Desk Signal & Risk Synthesis analysis has been recorded yet.')}
+      </p>
+    </section>
+  );
+}
+
 const SPATIAL_LOCATIONS = {
   hormuz: { name: 'Strait of Hormuz', type: 'chokepoint', region: 'Persian Gulf', coords: '26.42° N, 56.51° E' },
   bab: { name: 'Bab el-Mandeb', type: 'chokepoint', region: 'Red Sea', coords: '12.65° N, 43.42° E' },
@@ -608,8 +628,8 @@ export default function App() {
             </div>
 
             <div className="news-layout">
-              {/* SVG Line Chart Panel */}
-              <div className="chart-panel">
+              <div className="news-chart-column">
+                <div className="chart-panel">
                 <div className="panel-header-flex">
                   <div>
                     <h3 className="panel-title">Brent Crude Oil Futures (BZ=F)</h3>
@@ -734,6 +754,12 @@ export default function App() {
                     Drag chart to pan · scroll to zoom time · drag price scale to adjust · {chartLoading ? 'Updating…' : chartTimeframe.toUpperCase()}
                   </div>
                 </div>
+              </div>
+                <DeskSynthesisAnalysis
+                  analysis={activeAnalysis}
+                  loading={strategyDeskLoading}
+                  error={strategyDeskError}
+                />
               </div>
 
               <div className="news-sidebar">
@@ -1157,6 +1183,12 @@ export default function App() {
               </div>
             </div>
 
+            <DeskSynthesisAnalysis
+              analysis={activeAnalysis}
+              loading={strategyDeskLoading}
+              error={strategyDeskError}
+            />
+
             {strategyDeskError && <div className="war-room-error" role="alert">{strategyDeskError}</div>}
             {strategyDeskLoading && (
               <div className="war-room-progress" role="status">
@@ -1194,15 +1226,6 @@ export default function App() {
                         <p>{turn.message}</p>
                       </article>
                     ))}
-                    {activeAnalysis.verdict?.rationale && (
-                      <article className="debate-message debate-risk">
-                        <div className="debate-message-topline">
-                          <span className="debate-agent"><i />Desk Signal & Risk Synthesis</span>
-                          <span className="debate-phase">DESK SYNTHESIS</span>
-                        </div>
-                        <p>{activeAnalysis.verdict.rationale}</p>
-                      </article>
-                    )}
                   </div>
                 ) : (
                   <div className="war-room-empty">
