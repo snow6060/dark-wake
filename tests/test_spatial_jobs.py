@@ -10,7 +10,7 @@ from src.job_reporter import Reporter
 def test_batch_job_runs_zones_sequentially_and_reports_failures(monkeypatch):
     seen = []
 
-    def process(zone_id, reporter):
+    def process(zone_id, reporter, sam_enabled=True):
         seen.append(zone_id)
         reporter.progress(50, "fetch")
         reporter.phase = "analysis"

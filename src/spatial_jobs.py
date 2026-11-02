@@ -36,7 +36,7 @@ class _BatchReporter:
         self.reporter.log(f"[{self.zone_id}] {message}")
 
 
-def _process_zone(zone_id, reporter):
+def _process_zone(zone_id, reporter, sam_enabled=True):
     from src.analysis_run import analyze_latest
     from src.satellite_fetch import run_fetch_cycle
 
@@ -54,27 +54,27 @@ def _process_zone(zone_id, reporter):
         )
     reporter.progress(80, f"{zone_id}: analysing latest capture")
     reporter.phase = "analysis"
-    analyze_latest(zone_id, reporter)
+    analyze_latest(zone_id, reporter, sam_enabled=sam_enabled)
 
 
-def _run(zone_id, rep):
+def _run(zone_id, rep, sam_enabled=True):
     try:
         with _WORK_LOCK:
-            _process_zone(zone_id, rep)
+            _process_zone(zone_id, rep, sam_enabled=sam_enabled)
         rep.finish()
     except Exception as exc:
         log.exception("Spatial analysis job failed for %s", zone_id)
         rep.fail(str(exc))
 
 
-def _run_batch(zone_ids, rep):
+def _run_batch(zone_ids, rep, sam_enabled=True):
     failures = []
     zone_span = 100.0 / len(zone_ids)
     with _WORK_LOCK:
         for index, zone_id in enumerate(zone_ids):
             adapter = _BatchReporter(rep, zone_id, index * zone_span, zone_span)
             try:
-                _process_zone(zone_id, adapter)
+                _process_zone(zone_id, adapter, sam_enabled=sam_enabled)
             except Exception as exc:
                 failures.append(zone_id)
                 adapter.log(f"analysis failed: {exc}")
@@ -85,7 +85,7 @@ def _run_batch(zone_ids, rep):
         rep.finish()
 
 
-def start_job(zone_id):
+def start_job(zone_id, sam_enabled=True):
     with _LOCK:
         jid = _ACTIVE.get(zone_id)
         if jid and not JOBS[jid].done:
@@ -93,11 +93,11 @@ def start_job(zone_id):
         jid = uuid.uuid4().hex[:8]
         JOBS[jid] = Reporter(echo=True)
         _ACTIVE[zone_id] = jid
-    threading.Thread(target=_run, args=(zone_id, JOBS[jid]), daemon=True).start()
+    threading.Thread(target=_run, args=(zone_id, JOBS[jid], sam_enabled), daemon=True).start()
     return jid, True
 
 
-def start_batch_job(zone_ids):
+def start_batch_job(zone_ids, sam_enabled=True):
     ordered_ids = list(dict.fromkeys(zone_ids))
     if not ordered_ids:
         raise ValueError("Select at least one zone.")
@@ -112,7 +112,11 @@ def start_batch_job(zone_ids):
         JOBS[job_id] = Reporter(echo=True)
         for zone_id in ordered_ids:
             _ACTIVE[zone_id] = job_id
-    threading.Thread(target=_run_batch, args=(ordered_ids, JOBS[job_id]), daemon=True).start()
+    threading.Thread(
+        target=_run_batch,
+        args=(ordered_ids, JOBS[job_id], sam_enabled),
+        daemon=True,
+    ).start()
     return job_id
 
 
@@ -207,7 +211,7 @@ def _run_startup_live_analysis():
                     if not snapshots:
                         log.info("Startup live AIS analysis skipped %s: no stored image.", zone.zone_id)
                         continue
-                    analyze_latest(zone.zone_id)
+                    analyze_latest(zone.zone_id, sam_enabled=True)
                     log.info("Startup live AIS analysis completed for %s.", zone.zone_id)
                 except Exception as exc:
                     failures.append(f"{zone.zone_id}: {exc}")

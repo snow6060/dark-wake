@@ -71,8 +71,10 @@ def download_image(url, rep, lo=80, hi=88):
     return Image.open(buf)
 
 
-def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True):
+def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam_enabled=None):
     rep = rep or Reporter(echo=False)
+    if sam_enabled is None:
+        sam_enabled = os.getenv("SAM_ENABLE", "").lower() in {"1", "true", "yes", "on"}
     zone = load_active_zones([zone_id])[0]
     snap = (supabase.table("spatial_snapshots").select("*").eq("zone_id", zone_id)
             .order("acquired_at", desc=True).limit(1).execute().data or [None])[0]
@@ -86,10 +88,10 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True):
     rgb = np.asarray(img.convert("RGB"))
     rep.progress(89, "Detecting vessels in the image")
     cands = vc.propose_candidates(rgb)
-    if os.getenv("SAM_ENABLE") == "1":
+    if sam_enabled:
         from src.sam_refine import refine_candidates
         from src.sam_runtime import segment_exemplars
-        rep.progress(90, "SAM 3 verification (pairs + sample)")
+        rep.progress(90, "SAM 3.1 verification (pairs + sample)")
         refine_candidates(rgb, cands, segment_exemplars, sample=int(os.getenv("SAM_SAMPLE", "10")))
         for c in cands:
             if c.wide and hasattr(c, "sam"):
@@ -136,7 +138,7 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True):
         "ais_visible_pct": round(100 * len(res["matched"]) / max(n, 1)),
         "feed_coverage_large": res["feed_coverage_large"], "ais_credits_left": credits,
         "ais_note": "Voyage Radar terrestrial history; anchored ships trusted 24 h, moving 30 min",
-        "method": ("classical proposals + SAM 3 verification (pairs + sample)" if os.getenv("SAM_ENABLE") == "1"
+        "method": ("classical proposals + SAM 3.1 verification (pairs + sample)" if sam_enabled
                    else "classical proposals (SAM verification off)"),
         "sam_contact_pairs": sum(1 for h in hulls if h["pair"] and (h.get("sam") or {}).get("contact")) // 2,
     }

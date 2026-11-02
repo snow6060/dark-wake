@@ -109,7 +109,7 @@ def test_analysis_requests_ais_at_scene_timestamp_and_persists_vessels(monkeypat
         lambda *_args: SimpleNamespace(convert=lambda _mode: np.zeros((2, 2, 3), dtype=np.uint8)),
     )
 
-    analysis_run.analyze_latest("hormuz")
+    analysis_run.analyze_latest("hormuz", sam_enabled=False)
 
     assert requested == [((56.0, 26.0, 57.0, 27.0), acquired_at)]
     assert supabase.saved_analysis["ais_vessels"] == vessels

@@ -6,13 +6,14 @@ so; no number is ever invented.
 from __future__ import annotations
 
 import time
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from src.spatial_config import PRIMARY_ZONE_IDS, load_settings
+from src.spatial_config import load_settings
 from src.supabase_client import supabase
 from src.geo_utils import range_bearing_km  # noqa: E402
 from src.spatial_jobs import JOBS, start_batch_job, start_job  # noqa: E402
@@ -25,6 +26,14 @@ CACHE_TTL_SECONDS = 60  # the app polls every 15 s; don't hit Supabase each time
 
 class BatchRunRequest(BaseModel):
     zone_ids: list[str]
+
+
+class CreateZoneRequest(BaseModel):
+    display_name: str = Field(min_length=3, max_length=80)
+    bbox_west: float = Field(ge=-180, le=180)
+    bbox_south: float = Field(ge=-90, le=90)
+    bbox_east: float = Field(ge=-180, le=180)
+    bbox_north: float = Field(ge=-90, le=90)
 
 
 def _cached(key: str, fn: Callable[[], Any]) -> Any:
@@ -89,7 +98,6 @@ def _load_zones() -> list[dict[str, Any]]:
     client = _require_supabase()
     now = datetime.now(timezone.utc)
     zones = client.table("spatial_zones").select("*").eq("active", True).order("sort_order").execute().data or []
-    zones = [z for z in zones if z["zone_id"] in PRIMARY_ZONE_IDS]
     out = []
     for z in zones:
         rows = (
@@ -133,8 +141,88 @@ def _load_zones() -> list[dict[str, Any]]:
 
 @router.post("/zones/{zone_id}/run")
 def run_zone(zone_id: str):
+    client = _require_supabase()
+    zones = (
+        client.table("spatial_zones")
+        .select("zone_id")
+        .eq("zone_id", zone_id)
+        .eq("active", True)
+        .execute()
+        .data
+        or []
+    )
+    if not zones:
+        raise HTTPException(status_code=404, detail=f"Active zone '{zone_id}' was not found.")
     jid, started = start_job(zone_id)
     return {"job_id": jid, "started": started}
+
+
+@router.post("/zones")
+def create_zone(request: CreateZoneRequest):
+    west, south, east, north = (
+        request.bbox_west,
+        request.bbox_south,
+        request.bbox_east,
+        request.bbox_north,
+    )
+    if west >= east or south >= north:
+        raise HTTPException(status_code=422, detail="Bounding box west/south must be less than east/north.")
+    if east - west > 4 or north - south > 4:
+        raise HTTPException(status_code=422, detail="Custom zones are limited to 4 degrees in either dimension.")
+    if east - west < 0.02 or north - south < 0.02:
+        raise HTTPException(status_code=422, detail="Custom zone must span at least 0.02 degrees in both dimensions.")
+
+    client = _require_supabase()
+    slug = re.sub(r"[^a-z0-9]+", "_", request.display_name.lower()).strip("_")
+    if not slug:
+        raise HTTPException(status_code=422, detail="Zone name must contain letters or numbers.")
+    zone_id = f"custom_{slug}"[:96].rstrip("_")
+    existing = (
+        client.table("spatial_zones")
+        .select("zone_id,display_name")
+        .execute()
+        .data
+        or []
+    )
+    if any(row["zone_id"] == zone_id for row in existing):
+        raise HTTPException(status_code=409, detail=f"A zone with ID '{zone_id}' already exists.")
+    if any(row["display_name"].strip().casefold() == request.display_name.strip().casefold() for row in existing):
+        raise HTTPException(status_code=409, detail="A zone with that display name already exists.")
+
+    ordered = (
+        client.table("spatial_zones")
+        .select("sort_order")
+        .order("sort_order", desc=True)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    zone_row = {
+        "zone_id": zone_id,
+        "display_name": request.display_name.strip(),
+        "kind": "custom",
+        "why_it_matters": "User-defined maritime area of interest.",
+        "bbox_west": west,
+        "bbox_south": south,
+        "bbox_east": east,
+        "bbox_north": north,
+        "ref_lat": (south + north) / 2,
+        "ref_lon": (west + east) / 2,
+        "range_rings_km": [5, 10, 20],
+        "min_declared_length_m": 100,
+        "active": True,
+        "sort_order": (ordered[0].get("sort_order") or 0) + 1 if ordered else 1,
+    }
+    client.table("spatial_zones").insert(zone_row).execute()
+
+    try:
+        job_id = start_batch_job([zone_id], sam_enabled=True)
+    except RuntimeError as exc:
+        client.table("spatial_zones").update({"active": False}).eq("zone_id", zone_id).execute()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    _CACHE.pop("zones", None)
+    return {"zone_id": zone_id, "display_name": zone_row["display_name"], "job_id": job_id}
 
 
 @router.post("/zones/run")
@@ -142,8 +230,6 @@ def run_zones(request: BatchRunRequest):
     zone_ids = list(dict.fromkeys(request.zone_ids))
     if not zone_ids:
         raise HTTPException(status_code=422, detail="Select at least one zone.")
-    if any(zone_id not in PRIMARY_ZONE_IDS for zone_id in zone_ids):
-        raise HTTPException(status_code=422, detail="One or more selected zone IDs are invalid.")
     client = _require_supabase()
     active_zones = (
         client.table("spatial_zones")
@@ -162,7 +248,7 @@ def run_zones(request: BatchRunRequest):
             detail=f"Selected zones are not active: {', '.join(unavailable)}.",
         )
     try:
-        job_id = start_batch_job(zone_ids)
+        job_id = start_batch_job(zone_ids, sam_enabled=True)
     except RuntimeError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"job_id": job_id, "zone_ids": zone_ids}
@@ -241,7 +327,9 @@ def zone_analysis(zone_id: str):
     flags = a["flags"]
     return {"zone": zone_info, "snapshot": snap, "summary": a["summary"],
             "hulls": [{**h, **rb(h)} for h in a["hulls"]],
-            "ais_vessels": a.get("ais_vessels") or [],
+            "ais_vessels": [
+                {**vessel, **rb(vessel)} for vessel in a.get("ais_vessels") or []
+            ],
             "ghosts": [{**g, **rb(g)} for g in flags.get("ghost", [])],
             "displaced": flags.get("displaced", [])}
 

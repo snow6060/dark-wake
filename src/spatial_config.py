@@ -100,8 +100,6 @@ def load_active_zones(zone_ids: list[str] | None = None) -> list[Zone]:
     query = supabase.table("spatial_zones").select("*").eq("active", True).order("sort_order")
     rows = query.execute().data or []
     zones = [zone_from_row(r) for r in rows]
-    allowed = set(PRIMARY_ZONE_IDS)
-    zones = [z for z in zones if z.zone_id in allowed]
     if zone_ids:
         wanted = set(zone_ids)
         zones = [z for z in zones if z.zone_id in wanted]

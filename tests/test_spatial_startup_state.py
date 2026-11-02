@@ -84,7 +84,7 @@ def test_failed_startup_live_analysis_is_not_retried_automatically(monkeypatch):
     client = StartupSupabase()
     attempts = []
 
-    def fail_analysis(zone_id):
+    def fail_analysis(zone_id, **_kwargs):
         attempts.append(zone_id)
         raise RuntimeError("live AIS unavailable")
 

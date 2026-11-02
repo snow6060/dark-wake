@@ -3,6 +3,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 const API = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const COLORS = { matched: "#34d399", dark: "#ef4444", displaced: "#f59e0b", unknown: "#64748b", unmatched_small: "#475569" };
 const RADIUS = { LARGE: 3.4, MEDIUM: 2.4, SMALL: 1.7 };
+const HORMUZ_AOIS = [
+  { id: "full", label: "FULL STRAIT · COMBINED", bbox: null },
+  { id: "bandar", label: "BANDAR ABBAS / RAJAEE", bbox: [56.0, 26.85, 56.75, 27.4] },
+  { id: "western", label: "WESTERN APPROACH", bbox: [55.6, 26.35, 56.45, 27.0] },
+  { id: "musandam", label: "MUSANDAM / KHASAB", bbox: [56.0, 25.85, 56.85, 26.5] },
+];
 
 const css = `
 .sp{background:#05080d;color:#c8d6e5;font-family:ui-monospace,Menlo,Consolas,monospace;padding:16px;min-height:100%}
@@ -10,6 +16,8 @@ const css = `
 .sp h2{margin:0 0 4px;color:#7dd3fc;letter-spacing:2px;font-size:18px}
 .sp .sub{color:#64748b;font-size:11px;margin-bottom:12px}
 .sp .zone-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:8px;margin:12px 0}
+.sp .toolbar-actions{display:flex;align-items:center;gap:8px}
+.sp .toolbar-actions .add-zone{background:#101b28;border-color:#58758b;color:#c8d6e5}
 .sp .zone-card{background:#080d14;border:1px solid #16303f;padding:9px}
 .sp .zone-card.active{border-color:#34d399}
 .sp .zone-card-head{display:flex;align-items:center;gap:8px}
@@ -48,6 +56,13 @@ const css = `
 .sp .vessel-table th{position:sticky;top:0;background:#0b121a;color:#7dd3fc}
 .sp .vessel-table td{color:#b4c4d2}
 .sp .pill{border:1px solid #385366;border-radius:10px;padding:2px 7px;color:#fbbf24}
+.sp .hover-card{position:absolute;z-index:5;width:248px;max-width:calc(100% - 20px);padding:11px 12px;background:#1e293b;border:1px solid #37618b;border-radius:8px;box-shadow:0 10px 24px #0009;color:#e2e8f0;font:12px Arial,sans-serif;pointer-events:none}
+.sp .hover-card:after{content:"";position:absolute;left:var(--arrow-left,20px);bottom:-7px;width:12px;height:12px;background:#1e293b;border-right:1px solid #37618b;border-bottom:1px solid #37618b;transform:rotate(45deg)}
+.sp .hover-title{display:flex;align-items:center;gap:7px;margin-bottom:8px;color:#93c5fd;font-size:15px;font-weight:700}
+.sp .hover-dot{width:9px;height:9px;border-radius:50%;background:#fb7185;box-shadow:0 0 0 3px #fb718533}
+.sp .hover-line{display:flex;gap:5px;margin:4px 0}
+.sp .hover-line span{color:#94a3b8}
+.sp .hover-line b{color:#f8fafc;font-weight:500}
 .sp .run{margin-top:12px}
 .sp .bar{height:10px;background:#0b1320;border:1px solid #1e3a4c;margin:8px 0}
 .sp .bar>i{display:block;height:100%;background:linear-gradient(90deg,#0ea5e9,#34d399);transition:width .4s}
@@ -57,6 +72,10 @@ const css = `
 .sp .dialog-backdrop{position:fixed;inset:0;z-index:1000;background:#000b;display:grid;place-items:center;padding:16px}
 .sp .dialog{width:min(520px,100%);max-height:min(80vh,700px);overflow:auto;background:#080d14;border:1px solid #27516a;padding:16px;box-shadow:0 20px 70px #000}
 .sp .dialog h3{margin:0 0 6px;color:#7dd3fc}
+.sp .form-field{display:grid;gap:5px;margin:12px 0;color:#9fb7c9;font-size:11px}
+.sp .form-field input{min-width:0;background:#05080d;border:1px solid #28485b;color:#e2f3ff;padding:8px;font:inherit}
+.sp .form-field input:focus{outline:1px solid #38bdf8}
+.sp .bbox-fields{display:grid;grid-template-columns:1fr 1fr;gap:0 12px}
 .sp .dialog-list{display:grid;gap:7px;margin:12px 0}
 .sp .dialog-list label{display:flex;gap:9px;align-items:center;color:#c8d6e5}
 .sp .dialog-list input{accent-color:#34d399}
@@ -67,6 +86,13 @@ const css = `
 `;
 
 const age = (iso) => (iso ? Math.round((Date.now() - new Date(iso).getTime()) / 36e5) : null);
+const dataAge = (iso) => {
+  if (!iso) return "Unknown";
+  const minutes = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 60000));
+  if (minutes < 60) return `${minutes} min ago`;
+  if (minutes < 24 * 60) return `${Math.floor(minutes / 60)} h ago`;
+  return `${Math.floor(minutes / (24 * 60))} days ago`;
+};
 
 async function responseJson(response) {
   const body = await response.json().catch(() => ({}));
@@ -87,10 +113,14 @@ export default function SpatialIntelligence() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [dragging, setDragging] = useState(false);
   const [zoneDialog, setZoneDialog] = useState(false);
+  const [addZoneDialog, setAddZoneDialog] = useState(false);
+  const [newZone, setNewZone] = useState({ display_name: "", bbox_west: "", bbox_south: "", bbox_east: "", bbox_north: "" });
   const [hormuzSector, setHormuzSector] = useState("full");
+  const [hoverCard, setHoverCard] = useState(null);
   const [job, setJob] = useState(null);
   const timer = useRef(null);
   const dragStart = useRef(null);
+  const viewportRef = useRef(null);
   const zoneRef = useRef(zone);
   zoneRef.current = zone;
 
@@ -126,8 +156,46 @@ export default function SpatialIntelligence() {
   }, [zone, loadAnalysis]);
   useEffect(() => () => clearInterval(timer.current), []);
 
-  const run = async () => {
-    const zoneIds = selectedZones || zones.map((item) => item.zone_id);
+  const followJob = (jobId, zoneIds) => {
+    setJob({
+      id: jobId, pct: 0, stage: `Starting ${zoneIds.length} zone(s)`,
+      lines: [], done: false, error: null, next: 0,
+    });
+    clearInterval(timer.current);
+    let next = 0;
+    let polling = false;
+    timer.current = setInterval(async () => {
+      if (polling) return;
+      polling = true;
+      try {
+        const response = await fetch(`${API}/api/spatial/jobs/${jobId}?since=${next}`);
+        const status = await responseJson(response);
+        next = status.next ?? next;
+        setJob((current) => ({
+          ...status,
+          id: jobId,
+          lines: [...(current?.lines || []), ...(status.lines || [])],
+          next,
+        }));
+        if (status.done) {
+          clearInterval(timer.current);
+          loadZones();
+          if (zoneRef.current && zoneIds.includes(zoneRef.current)) {
+            loadAnalysis(zoneRef.current);
+          }
+        }
+      } catch (e) {
+        clearInterval(timer.current);
+        setJob((current) => ({ ...current, done: true, error: e.message }));
+        setErr("Could not track analysis job: " + e.message);
+      } finally {
+        polling = false;
+      }
+    }, 1200);
+  };
+
+  const run = async (requestedZoneIds = selectedZones || zones.map((item) => item.zone_id)) => {
+    const zoneIds = requestedZoneIds;
     if (!zoneIds.length) return;
     try {
       setErr(null);
@@ -140,44 +208,49 @@ export default function SpatialIntelligence() {
       const { job_id: jobId } = await responseJson(response);
       if (!jobId) throw new Error("The backend did not return a job ID.");
       setZoneDialog(false);
-      setJob({
-        id: jobId, pct: 0, stage: `Starting ${zoneIds.length} zone(s)`,
-        lines: [], done: false, error: null, next: 0,
-      });
-      clearInterval(timer.current);
-
-      let next = 0;
-      let polling = false;
-      timer.current = setInterval(async () => {
-        if (polling) return;
-        polling = true;
-        try {
-          const response = await fetch(`${API}/api/spatial/jobs/${jobId}?since=${next}`);
-          const status = await responseJson(response);
-          next = status.next ?? next;
-          setJob((current) => ({
-            ...status,
-            id: jobId,
-            lines: [...(current?.lines || []), ...(status.lines || [])],
-            next,
-          }));
-          if (status.done) {
-            clearInterval(timer.current);
-            loadZones();
-            if (zoneRef.current && zoneIds.includes(zoneRef.current)) {
-              loadAnalysis(zoneRef.current);
-            }
-          }
-        } catch (e) {
-          clearInterval(timer.current);
-          setJob((current) => ({ ...current, done: true, error: e.message }));
-          setErr("Could not track analysis job: " + e.message);
-        } finally {
-          polling = false;
-        }
-      }, 1200);
+      followJob(jobId, zoneIds);
     } catch (e) {
       setErr("Could not start analysis: " + e.message);
+    }
+  };
+
+  const createZone = async (event) => {
+    event.preventDefault();
+    if (
+      !newZone.display_name.trim()
+      || ["bbox_west", "bbox_south", "bbox_east", "bbox_north"].some((key) => !newZone[key].trim())
+    ) {
+      setErr("Enter a zone name and four valid bounding-box coordinates.");
+      return;
+    }
+    const payload = {
+      display_name: newZone.display_name.trim(),
+      bbox_west: Number(newZone.bbox_west),
+      bbox_south: Number(newZone.bbox_south),
+      bbox_east: Number(newZone.bbox_east),
+      bbox_north: Number(newZone.bbox_north),
+    };
+    if (Object.values(payload).some((value) => value === "" || (typeof value === "number" && !Number.isFinite(value)))) {
+      setErr("Enter a zone name and four valid bounding-box coordinates.");
+      return;
+    }
+    try {
+      setErr(null);
+      const response = await fetch(`${API}/api/spatial/zones`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const result = await responseJson(response);
+      if (!result.job_id || !result.zone_id) throw new Error("The backend did not return the new zone job.");
+      setAddZoneDialog(false);
+      setNewZone({ display_name: "", bbox_west: "", bbox_south: "", bbox_east: "", bbox_north: "" });
+      setZone(result.zone_id);
+      setSelectedZones((current) => [...new Set([...(current || zones.map((item) => item.zone_id)), result.zone_id])]);
+      loadZones();
+      followJob(result.job_id, [result.zone_id]);
+    } catch (e) {
+      setErr("Could not create and analyze zone: " + e.message);
     }
   };
 
@@ -222,12 +295,15 @@ export default function SpatialIntelligence() {
     data?.zone?.bbox_west, data?.zone?.bbox_south,
     data?.zone?.bbox_east, data?.zone?.bbox_north,
   ];
-  const midpointLat = Number.isFinite(bbox[1]) && Number.isFinite(bbox[3]) ? (bbox[1] + bbox[3]) / 2 : null;
-  const sectorBounds = hormuzSector === "iran" && midpointLat !== null
-    ? [bbox[0], midpointLat, bbox[2], bbox[3]]
-    : hormuzSector === "oman" && midpointLat !== null
-      ? [bbox[0], bbox[1], bbox[2], midpointLat]
-      : null;
+  const selectedAoi = HORMUZ_AOIS.find((item) => item.id === hormuzSector) || HORMUZ_AOIS[0];
+  const sectorBounds = selectedAoi.bbox && bbox.every(Number.isFinite)
+    ? [
+      Math.max(selectedAoi.bbox[0], bbox[0]),
+      Math.max(selectedAoi.bbox[1], bbox[1]),
+      Math.min(selectedAoi.bbox[2], bbox[2]),
+      Math.min(selectedAoi.bbox[3], bbox[3]),
+    ]
+    : selectedAoi.bbox;
   const inSector = (item) => !sectorBounds || (
     Number.isFinite(item.lat) && Number.isFinite(item.lon)
     && item.lon >= sectorBounds[0] && item.lon <= sectorBounds[2]
@@ -257,6 +333,17 @@ export default function SpatialIntelligence() {
   const largeUnmatched = largeHulls.filter((h) => h.status === "dark").length;
   const a = S ? age(S.acquired_at) : null;
   const running = job && !job.done;
+  const showHoverCard = (event, item) => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const width = 268;
+    const height = 184;
+    const x = Math.max(10, Math.min(event.clientX - rect.left + 12, rect.width - width - 10));
+    const y = Math.max(10, Math.min(event.clientY - rect.top - height - 12, rect.height - height - 10));
+    setHoverCard({ item, x, y });
+  };
+  const hideHoverCard = () => setHoverCard(null);
 
   const imageWidth = Number(snap?.width_px) || 1;
   const imageHeight = Number(snap?.height_px) || 1;
@@ -269,17 +356,20 @@ export default function SpatialIntelligence() {
       <style>{css}</style>
       <div className="titlebar">
         <h2>SPATIAL INTELLIGENCE</h2>
-        <button
-          type="button"
-          className="runbtn"
-          disabled={running || zones.length === 0}
-          onClick={() => setZoneDialog(true)}
-        >
-          {running ? "FETCHING + ANALYSING…" : "FETCH LATEST IMAGE AND RUN ANALYSIS"}
-        </button>
+        <div className="toolbar-actions">
+          <button type="button" className="add-zone" onClick={() => setAddZoneDialog(true)}>ADD ZONE</button>
+          <button
+            type="button"
+            className="runbtn"
+            disabled={running || zones.length === 0}
+            onClick={() => setZoneDialog(true)}
+          >
+            {running ? "FETCHING + ANALYSING…" : "FETCH LATEST IMAGE AND RUN ANALYSIS"}
+          </button>
+        </div>
       </div>
       <div className="sub">
-        Sentinel-2 optical · per-zone analysis · AIS history matched to each scene timestamp
+        Sentinel-2 optical · AIS history matched to scene timestamp · SAM 3.1 enabled for requested analyses
       </div>
       <div className="zone-grid">
         {zones.map((item) => {
@@ -310,21 +400,20 @@ export default function SpatialIntelligence() {
       {data && !snap && <div className="box">{data.message || "No satellite capture is available for this zone."}</div>}
       {data && snap && (
         <>
-          {zone === "hormuz" && midpointLat !== null && (
+          {zone === "hormuz" && (
             <div className="tabs" aria-label="Strait of Hormuz sectors">
-              <button className={hormuzSector === "full" ? "on" : ""} onClick={() => setHormuzSector("full")}>
-                FULL STRAIT · COMBINED
-              </button>
-              <button className={hormuzSector === "iran" ? "on" : ""} onClick={() => setHormuzSector("iran")}>
-                IRAN-SIDE SECTOR
-              </button>
-              <button className={hormuzSector === "oman" ? "on" : ""} onClick={() => setHormuzSector("oman")}>
-                OMAN-SIDE SECTOR
-              </button>
+              {HORMUZ_AOIS.map((aoi) => (
+                <button key={aoi.id} className={hormuzSector === aoi.id ? "on" : ""} onClick={() => setHormuzSector(aoi.id)}>
+                  {aoi.label}
+                </button>
+              ))}
               {sectorBounds && (
                 <span className="note">
-                  Bounds {sectorBounds[0].toFixed(3)}, {sectorBounds[1].toFixed(3)} to {sectorBounds[2].toFixed(3)}, {sectorBounds[3].toFixed(3)}
+                  AOI {sectorBounds[0].toFixed(3)}°E, {sectorBounds[1].toFixed(3)}°N – {sectorBounds[2].toFixed(3)}°E, {sectorBounds[3].toFixed(3)}°N
                 </span>
+              )}
+              {sectorBounds && (
+                <span className="note">Approximate congestion-monitoring boxes, not surveyed or official TSS boundaries.</span>
               )}
             </div>
           )}
@@ -341,12 +430,14 @@ export default function SpatialIntelligence() {
               <span className="note">{snap.acquired_at ? `Scene ${snap.acquired_at}` : "Latest stored scene"}</span>
             </div>
             <div
+              ref={viewportRef}
               className={`viewport${zoom > 1 ? " zoomed" : ""}${dragging ? " dragging" : ""}`}
               onPointerDown={startPan}
               onPointerMove={movePan}
               onPointerUp={endPan}
               onPointerCancel={endPan}
               onLostPointerCapture={endPan}
+              onPointerLeave={hideHoverCard}
             >
               {view === "radar" ? (
                 <svg
@@ -370,12 +461,44 @@ export default function SpatialIntelligence() {
                     <path d="M320 320 L320 20 A300 300 0 0 1 420 37 Z" fill="#34d39914" />
                     <line x1="320" y1="320" x2="320" y2="20" stroke="#34d39955" />
                   </g>
+                  {visibleAisVessels.filter((vessel) => Number.isFinite(vessel.range_km) && Number.isFinite(vessel.bearing_deg)).map((vessel, index) => {
+                    const [x, y] = xy(vessel);
+                    const matchedHull = hulls.find((hull) => String(hull.mmsi) === String(vessel.mmsi));
+                    const item = { ...vessel, scene_status: matchedHull?.status || "AIS report" };
+                    return (
+                      <circle
+                        key={`ais-${vessel.mmsi || index}`}
+                        cx={x}
+                        cy={y}
+                        r="5"
+                        fill="#38bdf8"
+                        stroke="#e0f2fe"
+                        strokeWidth="1.2"
+                        onPointerEnter={(event) => showHoverCard(event, item)}
+                        onPointerLeave={hideHoverCard}
+                      >
+                        <title>{vessel.name || `MMSI ${vessel.mmsi}`}</title>
+                      </circle>
+                    );
+                  })}
                   {visibleHulls.map((h) => {
                     const [x, y] = xy(h);
+                    const vessel = visibleAisVessels.find((item) => String(item.mmsi) === String(h.mmsi));
+                    const hoverItem = vessel
+                      ? { ...vessel, scene_status: h.status, length_m: h.length_m }
+                      : { name: h.name, mmsi: h.mmsi, ship_type: null, flag: null, country: null, nav: null, time_utc: null, scene_status: h.status, length_m: h.length_m };
                     return (
                       <g key={h.id}>
                         {h.pair && <circle cx={x} cy={y} r={RADIUS[h.size_class] + 3.5} fill="none" stroke="#22d3ee" strokeWidth="0.8" />}
-                        <circle cx={x} cy={y} r={RADIUS[h.size_class]} fill={COLORS[h.status] || COLORS.unknown} opacity={h.status === "unmatched_small" ? 0.55 : 0.95}>
+                        <circle
+                          cx={x}
+                          cy={y}
+                          r={RADIUS[h.size_class]}
+                          fill={COLORS[h.status] || COLORS.unknown}
+                          opacity={h.status === "unmatched_small" ? 0.55 : 0.95}
+                          onPointerEnter={(event) => showHoverCard(event, hoverItem)}
+                          onPointerLeave={hideHoverCard}
+                        >
                           <title>{`${h.status} · ${h.length_m} m${h.name ? " · " + h.name : ""}`}</title>
                         </circle>
                       </g>
@@ -385,7 +508,19 @@ export default function SpatialIntelligence() {
                     const [x, y] = xy(ghost);
                     return (
                       <g key={`ghost-${index}`}>
-                        <circle cx={x} cy={y} r="5" fill="none" stroke="#fb7185" strokeDasharray="2 2" />
+                        <circle
+                          cx={x}
+                          cy={y}
+                          r="5"
+                          fill="none"
+                          stroke="#fb7185"
+                          strokeDasharray="2 2"
+                          onPointerEnter={(event) => showHoverCard(event, {
+                            ...ghost,
+                            scene_status: "Ghost AIS candidate",
+                          })}
+                          onPointerLeave={hideHoverCard}
+                        />
                         <line x1={x - 3} y1={y - 3} x2={x + 3} y2={y + 3} stroke="#fb7185" />
                         <line x1={x - 3} y1={y + 3} x2={x + 3} y2={y - 3} stroke="#fb7185" />
                         <title>{`ghost AIS · ${ghost.name || ghost.mmsi}`}</title>
@@ -416,11 +551,29 @@ export default function SpatialIntelligence() {
                           fill="none"
                           stroke={h.pair ? "#22d3ee" : COLORS[h.status] || COLORS.unknown}
                           strokeWidth="3"
+                          onPointerEnter={(event) => {
+                            const vessel = visibleAisVessels.find((item) => String(item.mmsi) === String(h.mmsi));
+                            showHoverCard(event, vessel
+                              ? { ...vessel, scene_status: h.status, length_m: h.length_m }
+                              : { name: h.name, mmsi: h.mmsi, scene_status: h.status, length_m: h.length_m });
+                          }}
+                          onPointerLeave={hideHoverCard}
                         />
                       ))}
                   </svg>
                 </div>
               ) : <div className="note">No image stored.</div>}
+              {hoverCard && (
+                <div className="hover-card" style={{ left: hoverCard.x, top: hoverCard.y }}>
+                  <div className="hover-title"><i className="hover-dot" />{hoverCard.item.name || "Unidentified vessel"}</div>
+                  <div className="hover-line"><span>Flag:</span><b>{hoverCard.item.flag || "Not reported"}{hoverCard.item.country ? ` · ${hoverCard.item.country}` : ""}</b></div>
+                  <div className="hover-line"><span>Type:</span><b>{hoverCard.item.ship_type || hoverCard.item.type_code || "Not reported"}</b></div>
+                  <div className="hover-line"><span>Status:</span><b>{hoverCard.item.nav || "Not reported"} · {hoverCard.item.scene_status || "AIS report"}</b></div>
+                  <div className="hover-line"><span>MMSI:</span><b>{hoverCard.item.mmsi || "Not reported"}</b></div>
+                  {hoverCard.item.length_m && <div className="hover-line"><span>Image length:</span><b>{hoverCard.item.length_m} m</b></div>}
+                  <div className="hover-line"><span>Last data:</span><b>{dataAge(hoverCard.item.time_utc)}</b></div>
+                </div>
+              )}
             </div>
           </section>
           <section className="box">
@@ -470,7 +623,7 @@ export default function SpatialIntelligence() {
             <div className="note">
               Voyage Radar documents vessel type, flag, and country, but does not provide sanctions determinations. “Not assessed” is not a finding that a vessel is unsanctioned.
               {S ? ` ${S.ais_note}.` : ""}
-              {hormuzSector !== "full" && sectorBounds && " Hormuz lane sectors split the configured Strait bounding box at its latitude midpoint; the full Strait view retains the combined coverage."}
+              {hormuzSector !== "full" && sectorBounds && " Sector filtering is applied to stored AIS and image-derived vessel coordinates; the full capture remains available in the combined view."}
             </div>
             {S && (
               <>
@@ -528,6 +681,57 @@ export default function SpatialIntelligence() {
               </button>
             </div>
           </section>
+        </div>
+      )}
+      {addZoneDialog && (
+        <div className="dialog-backdrop" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setAddZoneDialog(false);
+        }}>
+          <form className="dialog" role="dialog" aria-modal="true" aria-labelledby="zone-create-title" onSubmit={createZone}>
+            <h3 id="zone-create-title">Add a satellite analysis zone</h3>
+            <div className="note">
+              Enter a name and a WGS84 bounding box in decimal degrees. Creating the zone immediately fetches its latest eligible Sentinel-2 image and runs AIS-matched analysis with SAM 3.1 enabled.
+            </div>
+            <label className="form-field">
+              Zone name
+              <input
+                autoFocus
+                required
+                minLength={3}
+                maxLength={80}
+                value={newZone.display_name}
+                onChange={(event) => setNewZone((current) => ({ ...current, display_name: event.target.value }))}
+                placeholder="e.g. Bandar Abbas Anchorage"
+              />
+            </label>
+            <div className="bbox-fields">
+              {[
+                ["bbox_west", "West longitude"],
+                ["bbox_south", "South latitude"],
+                ["bbox_east", "East longitude"],
+                ["bbox_north", "North latitude"],
+              ].map(([field, label]) => (
+                <label className="form-field" key={field}>
+                  {label}
+                  <input
+                    type="number"
+                    required
+                    step="any"
+                    min={field.includes("west") || field.includes("east") ? -180 : -90}
+                    max={field.includes("west") || field.includes("east") ? 180 : 90}
+                    value={newZone[field]}
+                    onChange={(event) => setNewZone((current) => ({ ...current, [field]: event.target.value }))}
+                    placeholder={field.includes("west") || field.includes("east") ? "longitude" : "latitude"}
+                  />
+                </label>
+              ))}
+            </div>
+            <div className="note">Bounds must be ordered west &lt; east and south &lt; north; each dimension is limited to 4°.</div>
+            <div className="dialog-actions">
+              <button type="button" onClick={() => setAddZoneDialog(false)}>Cancel</button>
+              <button type="submit" disabled={running}>Create + fetch + analyze</button>
+            </div>
+          </form>
         </div>
       )}
     </div>
