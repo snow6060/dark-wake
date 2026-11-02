@@ -73,13 +73,17 @@ def test_bootstrap_fetches_images_then_scene_matched_ais_once(monkeypatch):
     assert client.row["status"] == "complete"
 
 
-def test_failed_bootstrap_stops_startup_and_is_not_retried(monkeypatch):
+def test_failed_bootstrap_can_resume_on_later_startup(monkeypatch):
     client = StartupSupabase()
     events = []
+    analysis_attempts = 0
 
     def fail_analysis():
+        nonlocal analysis_attempts
+        analysis_attempts += 1
         events.append("scene-matched-ais")
-        raise RuntimeError("live AIS unavailable")
+        if analysis_attempts == 1:
+            raise RuntimeError("live AIS unavailable")
 
     monkeypatch.setattr("src.supabase_client.supabase", client)
     monkeypatch.setattr(spatial_jobs, "_fetch_missing_zones", lambda: events.append("images"))
@@ -87,10 +91,12 @@ def test_failed_bootstrap_stops_startup_and_is_not_retried(monkeypatch):
 
     with pytest.raises(RuntimeError, match="live AIS unavailable"):
         spatial_jobs.run_startup_spatial_bootstrap()
-    with pytest.raises(RuntimeError, match="will not be retried automatically"):
-        spatial_jobs.run_startup_spatial_bootstrap()
-
-    assert events == ["images", "scene-matched-ais"]
-    assert client.claims == 1
     assert client.row["status"] == "failed"
     assert "live AIS unavailable" in client.row["error"]
+
+    spatial_jobs.run_startup_spatial_bootstrap()
+    spatial_jobs.run_startup_spatial_bootstrap()
+
+    assert events == ["images", "scene-matched-ais", "images", "scene-matched-ais"]
+    assert client.claims == 2
+    assert client.row["status"] == "complete"

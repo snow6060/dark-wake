@@ -187,7 +187,7 @@ def _analyze_latest_zones_with_live_ais():
     for zone in zones:
         snapshots = (
             supabase.table("spatial_snapshots")
-            .select("id,image_url,acquired_at")
+            .select("id,image_url,acquired_at,status")
             .eq("zone_id", zone.zone_id)
             .order("acquired_at", desc=True)
             .limit(1)
@@ -199,6 +199,12 @@ def _analyze_latest_zones_with_live_ais():
             raise RuntimeError(
                 f"Cannot fetch scene-matched AIS for '{zone.zone_id}': latest satellite image is missing."
             )
+        if snapshots[0].get("status") == "verified":
+            log.info(
+                "Skipping scene-matched AIS analysis for %s; latest snapshot is already verified.",
+                zone.zone_id,
+            )
+            continue
         analyze_latest(zone.zone_id, sam_enabled=True)
         log.info(
             "One-time scene-matched live AIS analysis completed for %s (%s).",
@@ -241,11 +247,12 @@ def run_startup_spatial_bootstrap():
     if status == "complete":
         log.info("One-time spatial bootstrap already completed; skipping.")
         return
-    if status != "pending":
+    if status not in {"pending", "failed"}:
         raise RuntimeError(
-            f"One-time spatial bootstrap is {status}; it will not be retried automatically. "
-            "Inspect spatial_startup_state before restarting."
+            f"One-time spatial bootstrap is {status}; inspect spatial_startup_state before restarting."
         )
+    if status == "failed":
+        log.warning("Resuming the incomplete one-time spatial bootstrap after a prior failure.")
 
     claim = (
         state_table.update({
@@ -254,7 +261,7 @@ def run_startup_spatial_bootstrap():
             "error": None,
         })
         .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
-        .eq("status", "pending")
+        .eq("status", status)
         .select("startup_key")
         .execute()
         .data

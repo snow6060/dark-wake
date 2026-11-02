@@ -87,7 +87,10 @@ is claimed once. Startup fetches images for active zones without one, then
 analyzes each zone against AIS history for that image's acquisition time.
 RSS and telemetry ingestion and the periodic scheduler start only after this
 one-time sequence completes. A failure marks the bootstrap `failed` and stops
-backend startup; it is not retried automatically.
+backend startup. AIS history requests retry transient connection and server
+errors up to three times with backoff. A later manual backend restart resumes a
+failed bootstrap, skipping zones whose latest snapshot is already verified;
+successful completion is still recorded once and skipped on future startups.
 
 ## Build and sign the Windows installer with SignPath
 

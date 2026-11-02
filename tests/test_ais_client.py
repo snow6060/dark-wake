@@ -3,6 +3,22 @@ import pytest
 from src import ais_client
 
 
+class FakeResponse:
+    def __init__(self, status_code, payload=None, headers=None):
+        self.status_code = status_code
+        self.payload = payload or {"type": "FeatureCollection", "features": []}
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import requests
+
+            raise requests.HTTPError(f"HTTP {self.status_code}")
+
+    def json(self):
+        return self.payload
+
+
 def test_parse_features_reads_documented_vessel_metadata():
     ships = ais_client.parse_features({
         "type": "FeatureCollection",
@@ -57,3 +73,84 @@ def test_history_fetch_rejects_sandbox_without_making_request(monkeypatch):
 def test_parse_features_rejects_missing_coordinates():
     with pytest.raises(ValueError, match="missing vessel coordinates"):
         ais_client.parse_features({"features": [{"properties": {"id": 123456789}}]})
+
+
+def test_history_fetch_retries_server_error_and_returns_success(monkeypatch):
+    monkeypatch.setattr(ais_client, "BASE", "https://data.aisvesseltracker.com")
+    responses = iter([
+        FakeResponse(500),
+        FakeResponse(200, headers={"X-Credits-Remaining": "42"}),
+    ])
+    requests_seen = []
+
+    def fake_get(url, **kwargs):
+        requests_seen.append((url, kwargs))
+        return next(responses)
+
+    monkeypatch.setattr(ais_client.requests, "get", fake_get)
+    monkeypatch.setattr(ais_client.time, "sleep", lambda _seconds: None)
+
+    ships, credits = ais_client.fetch_bbox_history(
+        (56.3, 26.45, 56.7, 26.8),
+        "2026-10-26T07:02:15Z",
+        key="test",
+    )
+
+    assert ships == []
+    assert credits == "42"
+    assert len(requests_seen) == 2
+    assert requests_seen[0] == requests_seen[1]
+    assert requests_seen[0][1]["params"] == {
+        "swLat": 26.45,
+        "swLng": 56.3,
+        "neLat": 26.8,
+        "neLng": 56.7,
+        "at": "2026-10-26T07:02:15Z",
+        "window": 86400,
+    }
+
+
+def test_history_fetch_does_not_retry_client_error(monkeypatch):
+    monkeypatch.setattr(ais_client, "BASE", "https://data.aisvesseltracker.com")
+    calls = []
+
+    def fake_get(*_args, **_kwargs):
+        calls.append(True)
+        return FakeResponse(400)
+
+    monkeypatch.setattr(ais_client.requests, "get", fake_get)
+    monkeypatch.setattr(
+        ais_client.time,
+        "sleep",
+        lambda _seconds: pytest.fail("client errors must not be retried"),
+    )
+
+    with pytest.raises(ais_client.requests.HTTPError, match="HTTP 400"):
+        ais_client.fetch_bbox_history(
+            (56.3, 26.45, 56.7, 26.8),
+            "2026-10-26T07:02:15Z",
+            key="test",
+        )
+
+    assert len(calls) == 1
+
+
+def test_history_fetch_stops_after_bounded_server_error_retries(monkeypatch):
+    monkeypatch.setattr(ais_client, "BASE", "https://data.aisvesseltracker.com")
+    calls = []
+
+    def fake_get(*_args, **_kwargs):
+        calls.append(True)
+        return FakeResponse(500)
+
+    monkeypatch.setattr(ais_client.requests, "get", fake_get)
+    monkeypatch.setattr(ais_client.time, "sleep", lambda _seconds: None)
+
+    with pytest.raises(ais_client.requests.HTTPError, match="HTTP 500"):
+        ais_client.fetch_bbox_history(
+            (56.3, 26.45, 56.7, 26.8),
+            "2026-10-26T07:02:15Z",
+            key="test",
+        )
+
+    assert len(calls) == ais_client.HISTORY_REQUEST_ATTEMPTS

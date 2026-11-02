@@ -111,3 +111,52 @@ def test_startup_fetch_only_fetches_zones_without_snapshots(monkeypatch):
     spatial_jobs._fetch_missing_zones()
 
     assert fetched == [{"zone_ids": ["hormuz"], "limit": 1}]
+
+
+def test_startup_ais_analysis_skips_already_verified_snapshots(monkeypatch):
+    class SnapshotQuery:
+        def __init__(self):
+            self.zone_id = None
+
+        def select(self, _columns):
+            return self
+
+        def eq(self, _column, zone_id):
+            self.zone_id = zone_id
+            return self
+
+        def order(self, *_args, **_kwargs):
+            return self
+
+        def limit(self, _count):
+            return self
+
+        def execute(self):
+            return SimpleNamespace(data=[{
+                "id": self.zone_id,
+                "image_url": f"https://example.test/{self.zone_id}.jpg",
+                "acquired_at": "2026-10-26T07:02:15Z",
+                "status": "verified" if self.zone_id == "hormuz" else "fetched",
+            }])
+
+    class FakeSupabase:
+        def table(self, name):
+            assert name == "spatial_snapshots"
+            return SnapshotQuery()
+
+    zones = [
+        SimpleNamespace(zone_id="hormuz"),
+        SimpleNamespace(zone_id="fujairah"),
+    ]
+    analyzed = []
+
+    monkeypatch.setattr("src.supabase_client.supabase", FakeSupabase())
+    monkeypatch.setattr("src.spatial_config.load_active_zones", lambda: zones)
+    monkeypatch.setattr(
+        "src.analysis_run.analyze_latest",
+        lambda zone_id, sam_enabled: analyzed.append((zone_id, sam_enabled)),
+    )
+
+    spatial_jobs._analyze_latest_zones_with_live_ais()
+
+    assert analyzed == [("fujairah", True)]

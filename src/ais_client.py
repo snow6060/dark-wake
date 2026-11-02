@@ -1,4 +1,6 @@
+import logging
 import os
+import time
 from urllib.parse import urlparse
 
 import requests
@@ -6,6 +8,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 BASE = os.getenv("AIS_API_BASE", "https://data.aisvesseltracker.com").rstrip("/")
+log = logging.getLogger(__name__)
+HISTORY_REQUEST_ATTEMPTS = 3
 
 
 def parse_features(data):
@@ -45,12 +49,46 @@ def fetch_bbox_history(bbox, at_iso, window_s=86400, key=None, timeout=60):
         raise RuntimeError("Live AIS is required, but AIS_API_BASE points to the sandbox.")
     key = key or os.environ["VOYAGE_RADAR_API_KEY"]
     west, south, east, north = bbox
-    r = requests.get(
-        f"{BASE}/v1/vessels/bbox/history",
-        headers={"X-API-Key": key},
-        params={"swLat": south, "swLng": west, "neLat": north, "neLng": east, "at": at_iso, "window": window_s},
-        timeout=timeout,
-    )
+    params = {
+        "swLat": south,
+        "swLng": west,
+        "neLat": north,
+        "neLng": east,
+        "at": at_iso,
+        "window": window_s,
+    }
+    for attempt in range(HISTORY_REQUEST_ATTEMPTS):
+        try:
+            r = requests.get(
+                f"{BASE}/v1/vessels/bbox/history",
+                headers={"X-API-Key": key},
+                params=params,
+                timeout=timeout,
+            )
+        except (requests.Timeout, requests.ConnectionError):
+            if attempt + 1 == HISTORY_REQUEST_ATTEMPTS:
+                raise
+            delay = 2 ** attempt
+            log.warning(
+                "AIS history request failed to connect; retrying in %s seconds (attempt %s/%s).",
+                delay,
+                attempt + 1,
+                HISTORY_REQUEST_ATTEMPTS,
+            )
+            time.sleep(delay)
+            continue
+        if r.status_code < 500 or attempt + 1 == HISTORY_REQUEST_ATTEMPTS:
+            break
+        delay = 2 ** attempt
+        log.warning(
+            "AIS history service returned HTTP %s; retrying in %s seconds (attempt %s/%s).",
+            r.status_code,
+            delay,
+            attempt + 1,
+            HISTORY_REQUEST_ATTEMPTS,
+        )
+        time.sleep(delay)
+
     credits = r.headers.get("X-Credits-Remaining")
     if r.status_code == 204:
         return [], credits
