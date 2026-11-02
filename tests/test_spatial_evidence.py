@@ -57,6 +57,7 @@ def test_agent_routing():
     assert evidence_for_agent("Technical Analysis", ev) == ""
     demand = evidence_for_agent("Demand Thesis", ev)
     assert "singapore" in demand
+    assert "fujairah" in demand
     assert SPATIAL_GUARDRAIL in demand
     supply = evidence_for_agent("Supply Thesis", ev)
     assert "fujairah" in supply

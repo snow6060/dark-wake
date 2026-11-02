@@ -155,10 +155,12 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         _initial_analysis("technical", state)
 
         prompt = invoke.call_args.args[1]
-        self.assertIn("full supplied commodity basket", prompt)
+        self.assertIn("available commodity basket", prompt)
         self.assertIn("RSI (14)", prompt)
         self.assertIn("live_context", prompt)
-        self.assertIn("rather than inventing values", prompt)
+        self.assertIn("Do not invent missing values", prompt)
+        self.assertIn("300–400 words", prompt)
+        self.assertEqual(invoke.call_args.kwargs["max_tokens"], 2000)
 
     @patch("src.agents._invoke", return_value=json.dumps({
         "analysis": "Evidence-led supply view.",
@@ -169,10 +171,24 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         result = _initial_analysis(
             "supply",
             {
-                "market_context": {"price": 80.0},
+                "market_context": {
+                    "price": 80.0,
+                    "commodity_basket": {"BZ=F": {"price": 80.0}},
+                    "telemetry": [{"chokepoint_name": "Hormuz"}],
+                    "headlines": [{"title": "Supply update"}],
+                },
                 "initial_technical": "Technical view",
+                "spatial_analysis": "Two active zones show elevated vessel congestion.",
             },
         )
+        prompt = _invoke.call_args.args[1]
+        self.assertIn("commodity_basket", prompt)
+        self.assertIn("telemetry", prompt)
+        self.assertIn("headlines", prompt)
+        self.assertIn("Two active zones show elevated vessel congestion.", prompt)
+        self.assertIn("350–450 words", prompt)
+        self.assertIn("spatial assessment is supplementary context, not a replacement", prompt)
+        self.assertEqual(_invoke.call_args.kwargs["max_tokens"], 2000)
         self.assertEqual(
             result,
             {
@@ -223,6 +239,8 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         self.assertIn("Demand remains uncertain.", prompt)
         self.assertIn("market context", prompt)
         self.assertIn("not instead of", prompt)
+        self.assertIn("200–300 words", prompt)
+        self.assertEqual(invoke.call_args.kwargs["max_tokens"], 2200)
 
     def test_weekend_last_close_is_explicit_in_agent_context(self):
         prompt = _context_prompt(
@@ -276,7 +294,7 @@ class StrategyDeskLoadingTests(unittest.TestCase):
         )
         self.assertIn('"verdict_rationale": "Supply disruptions may tighten the market."', prompt)
         self.assertIn('"price": 84.0', prompt)
-        self.assertIn("Treat prior analysis as a hypothesis, not a fact or an anchor", prompt)
+        self.assertIn("Treat the prior view as a hypothesis, not a fact or an anchor", prompt)
 
     def test_agent_accuracy_scores_are_included_in_prompt_context(self):
         prompt = _context_prompt({

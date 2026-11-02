@@ -123,8 +123,9 @@ def evidence_for_agent(agent_name: str, evidence: dict[str, Any]) -> str:
         return ""
     block = [SPATIAL_GUARDRAIL]
     if "demand" in name:
-        block.append(evidence.get("singapore") or "Singapore: unavailable (no clear scene or analysis).")
+        block.extend(evidence.get("per_zone") or [])
         block.append(evidence.get("global") or "")
+        block.append(evidence.get("quality") or "")
     elif "synthesis" in name or "risk" in name or "desk" in name:
         block.append(evidence.get("global") or "")
         block.append(evidence.get("quality") or "")

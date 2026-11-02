@@ -38,7 +38,7 @@ class DebateState(TypedDict, total=False):
     verdict: dict[str, Any]
 
 
-MAX_AGENT_OUTPUT_TOKENS = 1200
+MAX_AGENT_OUTPUT_TOKENS = 2000
 MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
 META_API_TIMEOUT_SECONDS = 60
@@ -85,27 +85,34 @@ AGENTS = {
     "spatial": {
         "name": "Spatial Intelligence Analyst",
         "system": (
-            "You are an evidence-led maritime spatial-intelligence analyst. Separate direct "
-            "observations from implications and state data limitations."
+            "You are a maritime spatial-intelligence analyst supporting an oil-market debate. "
+            "Use only the supplied Sentinel-2 and AIS-derived evidence. Distinguish measured "
+            "observations, plausible implications, and unknowns. Never infer cargo, flag, "
+            "sanctions, destination, vessel intent, or causation from imagery or AIS alone."
         ),
     },
     "technical": {
         "name": "Technical Analysis",
         "system": (
-            "You are an evidence-based energy commodity quantitative analyst. Use only supplied "
-            "OHLCV prices and indicators; never invent market data."
+            "You are an evidence-based quantitative analyst focused on Brent crude. Use only "
+            "the supplied OHLCV history, commodity basket, timestamps, and technical indicators. "
+            "Never invent prices, indicator values, support/resistance, or unavailable data."
         ),
     },
     "supply": {
         "name": "Supply Thesis",
         "system": (
-            "You are an evidence-led oil-market supply analyst. Keep under 250 words."
+            "You are an evidence-led crude-oil supply analyst. Assess physical availability, "
+            "production, exports, inventories, routes, and disruption risk without overstating "
+            "what shipping or satellite observations establish."
         ),
     },
     "demand": {
         "name": "Demand Thesis",
         "system": (
-            "You are an evidence-led oil-market demand analyst. Keep under 250 words."
+            "You are an evidence-led crude-oil demand analyst. Assess consumption, refining, "
+            "trade, macroeconomic conditions, and demand-sensitive market evidence. Do not "
+            "equate vessel counts or port congestion with end-user demand."
         ),
     },
     "synthesis": {
@@ -504,7 +511,7 @@ def _gather_market_context() -> dict[str, Any]:
         "price_basis": market_snapshot["price_basis"],
         "price_as_of": market_snapshot["price_as_of"],
         "commodity_basket": commodity_basket,
-        "technical_report": technical_report[:700],
+        "technical_report": technical_report[:1800],
         "telemetry": telemetry,
         "telemetry_source": telemetry_source,
         "headlines": headlines,
@@ -623,21 +630,25 @@ def _context_prompt(state: DebateState, agent_name: str | None = None) -> str:
         instruction = "Use the latest available market data as authoritative."
     if prior_summary:
         instruction += (
-            " Compare your current findings with the prior analysis for your role, identify "
-            "what remains supported or has changed, and reassess the earlier view against "
-            "current evidence. Treat prior analysis as a hypothesis, not a fact or an anchor; "
-            "do not claim a forecast was correct without evidence."
+            " Compare your current findings with the prior analysis for your role. Identify "
+            "what remains supported, what changed, and which new evidence explains the change. "
+            "Treat the prior view as a hypothesis, not a fact or an anchor; do not claim a "
+            "forecast was correct without the supplied outcome evidence."
         )
     if accuracy_summary:
         instruction += (
-            " Review the supplied historical accuracy for your agent role. Use it as "
-            "calibrated feedback, not as a substitute for current market evidence."
+            " Review the supplied historical accuracy for your role, if present. Treat it as "
+            "calibration feedback, not as a substitute for current evidence."
         )
     prompt_context = {
         "live_context": context,
         "previous_debate_summary": prior_summary,
         "agent_accuracy_history": accuracy_summary,
         "instruction": instruction,
+        "analysis_standards": (
+            "Separate facts from interpretation; identify timestamps and source/coverage limits; "
+            "state the strongest counterargument; do not turn missing data into zero or certainty."
+        ),
     }
     if agent_name:
         evidence = spatial.get("spatial_behaviour") or {}
@@ -666,16 +677,21 @@ def _gather_context_node(state: DebateState) -> dict[str, Any]:
 def _spatial_analysis(state: DebateState) -> dict[str, str]:
     prompt = (
         f"{_context_prompt(state, AGENTS['spatial']['name'])}\n\n"
-        "Analyze every supplied active-zone satellite/AIS summary. Distinguish observed "
-        "vessels and AIS matches from uncertainty; identify evidence relevant to disruption, "
-        "congestion, and flow risk. Do not infer cargo, sanctions, destination, or intent. "
-        "Call out missing, stale, or unavailable zones explicitly. This assessment will inform "
-        "the separate supply and demand theses. Return a concise plain-text assessment."
+        "Assess every supplied active-zone satellite/AIS summary and the spatial coverage "
+        "metadata. Organize the assessment into: (1) observations by zone, including scene age, "
+        "cloud/coverage and vessel/AIS-match counts where supplied; (2) plausible implications "
+        "for shipping flow, congestion, or supply-route risk; (3) uncertainty, missing/stale "
+        "zones, and alternative explanations; and (4) what new evidence would change the view. "
+        "Do not infer cargo, sanctions, destination, intent, or causation. An unmatched hull is "
+        "not proof of AIS evasion; alongside pairs are not proof of transfer. This is one "
+        "additional input to the market debate, not a replacement for prices, indicators, "
+        "telemetry, headlines, or macro/supply/demand evidence. Aim for 300–400 words."
     )
     assessment = _invoke(
         AGENTS["spatial"]["system"],
         prompt,
         _model_for_role("spatial"),
+        max_tokens=1600,
     ).strip()
     if not assessment:
         raise RuntimeError("Spatial Intelligence Analyst returned an empty assessment.")
@@ -707,11 +723,14 @@ def _parse_agent_turn(response: str) -> dict[str, Any]:
 
 
 _AGENT_RESPONSE_FORMAT = (
-    "Return ONLY one JSON object with this exact schema: "
-    '{"analysis":"concise evidence-based reasoning","direction":"UP|DOWN|NEUTRAL",'
-    '"confidence":0}. Direction is the expected one-day Brent price direction; use NEUTRAL '
-    "when supplied evidence is balanced or insufficient. Confidence must be an integer 0-100. "
-    "Do not include markdown fences."
+    "Return ONLY one valid JSON object with this exact schema: "
+    '{"analysis":"reasoned evidence-based analysis","direction":"UP|DOWN|NEUTRAL",'
+    '"confidence":0}. The direction is the expected one-day Brent price direction. Use '
+    "NEUTRAL when evidence is balanced or insufficient. Confidence must be an integer 0–100 "
+    "and reflect evidence quality, not rhetorical certainty. In analysis, distinguish supplied "
+    "facts from interpretation, cite relevant supplied source/period or zone, address the "
+    "strongest counterargument, and state what remains unknown. Do not invent missing values "
+    "or use markdown fences."
 )
 
 
@@ -719,21 +738,35 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
     agent = AGENTS[role]
     role_instructions = {
         "technical": (
-            "Assess Brent and the full supplied commodity basket. Compare prices and RSI (14), "
-            "MACD (12,26,9), ATR (14), EMA (20/50/200), Bollinger bands, stochastic and VWAP "
-            "where available. Identify unavailable indicators rather than inventing values."
+            "Write 300–400 words. Analyze the supplied Brent price basis and as-of time, price "
+            "trend/momentum, volatility, and the available commodity basket. Evaluate RSI (14), "
+            "MACD (12,26,9), ATR (14), EMA (20/50/200), Bollinger bands, stochastic, and VWAP "
+            "only where actually supplied. Explain agreement/divergence between indicators and "
+            "cross-commodity context; distinguish a short-term one-day direction from the "
+            "broader regime. Name unavailable indicators instead of guessing. Do not make up "
+            "support/resistance or treat indicators as certainty."
         ),
         "supply": (
-            "Build an evidence-led supply thesis using commodity indicators, commercial shipping "
-            "route density, bottleneck telemetry, inventories, trade volumes, and supply data. "
-            "Use the dedicated Spatial Intelligence assessment as evidence, distinguish "
-            "observations from implications, and mention only supplied evidence."
+            "Write 350–450 words. Build an evidence-led supply thesis from the full supplied "
+            "market context: commodity prices/indicators, bottleneck and commercial shipping "
+            "telemetry, sanitized headlines, prior debate and accuracy history, plus the "
+            "dedicated Spatial Intelligence assessment. The spatial assessment is additional "
+            "evidence, not a substitute for these sources. Separate observed facts from "
+            "implications. Assess likely transmission to crude availability/pricing, timing, "
+            "and whether the evidence is confirmed or only a risk scenario. Address the strongest "
+            "counterargument and identify missing evidence. Do not imply that vessel counts "
+            "prove supply loss, cargo, or causation."
         ),
         "demand": (
-            "Build an evidence-led demand thesis using commodity indicators, macroeconomic "
-            "conditions, inventories, trade volumes, consumption data, and the dedicated Spatial "
-            "Intelligence assessment. Explain how observed shipping patterns may affect demand "
-            "signals without treating vessel counts as consumption. Mention only supplied evidence."
+            "Write 350–450 words. Build an evidence-led demand thesis from the full supplied "
+            "market context: Brent and correlated commodity prices/indicators, headlines, "
+            "bottleneck telemetry, prior debate and accuracy history, and the dedicated Spatial "
+            "Intelligence assessment. This spatial input supplements—not replaces—market, "
+            "macro, trade, and consumption evidence. Assess what the supplied data actually "
+            "indicates about demand, the price response, timing, and uncertainty. Shipping "
+            "patterns can inform trade-flow context but do not establish consumption or "
+            "end-user demand. Address the strongest counterargument and state which demand "
+            "indicators are unavailable rather than inventing them."
         ),
     }[role]
     prompt = (
@@ -742,10 +775,12 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
         f"SUPPLY THESIS:\n{state.get('initial_supply_thesis', '')}\n\n"
         f"DEMAND THESIS:\n{state.get('initial_demand_thesis', '')}\n\n"
         f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', '')}\n\n"
+        "Use the market context and your discipline-specific evidence above as primary inputs; "
+        "the spatial assessment is supplementary context, not a replacement.\n"
         f"{role_instructions}\n{_AGENT_RESPONSE_FORMAT}"
     )
     turn = _parse_agent_turn(
-        _invoke(agent["system"], prompt, _model_for_role(role))
+        _invoke(agent["system"], prompt, _model_for_role(role), max_tokens=2000)
     )
     state_keys = {
         "technical": ("initial_technical", "technical_direction"),
@@ -763,27 +798,33 @@ def _thesis_rebuttal(role: str, loop: int, state: DebateState) -> dict[str, Any]
         prior_key = "initial_demand_thesis" if loop == 1 else "demand_rebuttal_1"
         output_key = f"supply_rebuttal_{loop}"
         instruction = (
-            "Rebut the demand thesis with specific evidence about supply, commodity "
-            "relationships, shipping routes, inventories, and bottlenecks. Correct any earlier "
-            "claim that current evidence does not support."
+            "Reassess and rebut the demand thesis using the full current market context, relevant "
+            "commodity relationships, supply/route/bottleneck evidence, and the Spatial "
+            "Intelligence assessment. Identify the opposing thesis's strongest valid point, "
+            "then explain where evidence supports or weakens it. Correct any unsupported claim."
         )
     else:
         prior_key = "supply_rebuttal_1" if loop == 1 else "supply_rebuttal_2"
         output_key = f"demand_rebuttal_{loop}"
         instruction = (
-            "Rebut the supply thesis with evidence about demand, prices, inventories, and "
-            "macroeconomic conditions. Correct any earlier claim that current evidence does "
-            "not support."
+            "Reassess and rebut the supply thesis using the full current market context, demand/"
+            "macro/headline evidence, and the Spatial Intelligence assessment where relevant. "
+            "Identify the opposing thesis's strongest valid point, then explain where evidence "
+            "supports or weakens it. Correct any unsupported claim."
         )
     prompt = (
         f"{_context_prompt(state, AGENTS[role]['name'])}\n\n"
         f"TECHNICAL ANALYSIS:\n{state['initial_technical']}\n\n"
         f"PREVIOUS OPPOSING THESIS:\n{state[prior_key]}\n\n"
         f"Your prior analysis:\n{state['initial_supply_thesis'] if role == 'supply' else state['initial_demand_thesis']}\n\n"
-        f"REBUTTAL LOOP {loop}: {instruction}\n{_AGENT_RESPONSE_FORMAT}"
+        f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', '')}\n\n"
+        f"REBUTTAL LOOP {loop}: {instruction} Do not merely repeat your opening thesis. "
+        "Write 220–300 words, update your direction/confidence if the evidence warrants it, "
+        "and explicitly say when the evidence cannot resolve the disagreement.\n"
+        f"{_AGENT_RESPONSE_FORMAT}"
     )
     turn = _parse_agent_turn(
-        _invoke(AGENTS[role]["system"], prompt, _model_for_role(role))
+        _invoke(AGENTS[role]["system"], prompt, _model_for_role(role), max_tokens=1600)
     )
     direction_key = "supply_direction" if role == "supply" else "demand_direction"
     return {output_key: turn["analysis"], direction_key: turn["direction"]}
@@ -868,12 +909,16 @@ def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
         f"{_context_prompt(state, AGENTS['synthesis']['name'])}\n\n"
         f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', 'Unavailable')}\n\n"
         f"DEBATE ANALYSES:\n{json.dumps(agent_analyses, ensure_ascii=False)}\n\n"
-        "Deliver a risk-managed synthesis for the current Brent price. Use the spatial analysis "
-        "as additional evidence alongside—not instead of—the supplied market context, commodity "
-        "indicators, telemetry, headlines, technical analysis, supply thesis, demand thesis, and "
-        "rebuttals. Reconcile the technical analysis with the supply and demand theses. Compare the prior synthesis and all "
-        "three prior agent analyses with current evidence; say what changed and avoid treating "
-        "the old forecast as established fact. Avoid false precision. "
+        "Deliver a risk-managed synthesis for the supplied Brent price and forecast horizon. "
+        "Use spatial analysis as an additional input alongside—not instead of—the complete "
+        "market context, commodity basket, telemetry, headlines, technical analysis, supply and "
+        "demand theses, and both rebuttal rounds. Weigh evidence by recency, reliability, and "
+        "directness; reconcile disagreements instead of averaging directions. Explain the "
+        "strongest evidence on each side, what would invalidate the conclusion, and how spatial "
+        "observations affect (or do not materially affect) the market view. Compare prior "
+        "analysis with current evidence without anchoring or claiming success without outcome "
+        "data. Avoid false precision. The rationale should be 200–300 words, with concise, "
+        "specific risk factors. "
         "Respond ONLY as JSON with this exact shape: "
         '{"signal":"BUY|SELL|HOLD","conviction":0,"short_term_trend":"BULLISH|BEARISH|NEUTRAL",'
         '"long_term_trend":"BULLISH|BEARISH|NEUTRAL","support":0.0,"resistance":0.0,'
@@ -896,6 +941,7 @@ def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
             system,
             prompt,
             model,
+            max_tokens=2200,
         )
         return {"verdict": _parse_verdict(response)}
     except (ValueError, KeyError, TypeError) as parse_error:
@@ -911,6 +957,7 @@ def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
             system,
             repair_prompt,
             model,
+            max_tokens=2200,
         )
         try:
             return {"verdict": _parse_verdict(repaired_response)}
