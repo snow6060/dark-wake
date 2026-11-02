@@ -22,6 +22,7 @@ def _latest_price_data(
     *,
     daily: bool,
     market_is_closed: bool,
+    max_points: int = 480,
 ) -> dict[str, Any] | None:
     if history.empty or "Close" not in history:
         return None
@@ -40,10 +41,11 @@ def _latest_price_data(
     )
     history_values = [
         {
-            "time": index.strftime("%d %b" if daily else "%I:%M %p"),
+            "time": index.strftime("%d %b" if daily else "%d %b %H:%M"),
+            "timestamp": index.isoformat() if hasattr(index, "isoformat") else str(index),
             "price": round(float(value), 2),
         }
-        for index, value in closes.tail(12).items()
+        for index, value in closes.tail(max_points).items()
     ]
     as_of = closes.index[-1]
     if daily and hasattr(as_of, "date"):
@@ -57,33 +59,47 @@ def _latest_price_data(
         "history": history_values,
         "market_status": "closed" if market_is_closed else ("last_close" if daily else "open"),
         "market_is_closed": market_is_closed,
-        "price_basis": "last_close" if daily else "intraday",
+        "price_basis": "last_close" if daily or market_is_closed else "intraday",
+        "history_interval": "daily" if daily else "intraday",
         "price_as_of": as_of_text,
     }
 
 
-def get_brent_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
-    """Return an intraday Brent quote or, when unavailable, the latest daily close."""
+def get_brent_market_snapshot(
+    now: datetime | None = None,
+    period: str = "1d",
+) -> dict[str, Any]:
+    """Return a Brent quote and price history for the requested chart period."""
+    history_options = {
+        "1d": ("1d", "5m", False),
+        "5d": ("5d", "15m", False),
+        "1mo": ("1mo", "1h", False),
+        "3mo": ("3mo", "1d", True),
+    }
+    if period not in history_options:
+        raise ValueError(f"Unsupported Brent chart period: {period}")
+
     market_is_closed = _is_weekend(now)
     ticker = yf.Ticker("BZ=F")
     live_error: Exception | None = None
+    yahoo_period, interval, daily = history_options[period]
 
-    if not market_is_closed:
+    if not market_is_closed or period != "1d":
         try:
-            intraday = ticker.history(period="1d", interval="5m")
+            intraday = ticker.history(period=yahoo_period, interval=interval)
         except Exception as error:
             live_error = error
         else:
             snapshot = _latest_price_data(
                 intraday,
-                daily=False,
-                market_is_closed=False,
+                daily=daily,
+                market_is_closed=market_is_closed,
             )
             if snapshot is not None:
                 return snapshot
 
     try:
-        daily = ticker.history(period="5d", interval="1d")
+        daily_history = ticker.history(period="5d", interval="1d")
     except Exception as error:
         detail = f"Yahoo Finance daily history request failed: {error}"
         if live_error:
@@ -91,7 +107,7 @@ def get_brent_market_snapshot(now: datetime | None = None) -> dict[str, Any]:
         raise RuntimeError(f"Could not retrieve a Brent closing price: {detail}") from error
 
     snapshot = _latest_price_data(
-        daily,
+        daily_history,
         daily=True,
         market_is_closed=market_is_closed,
     )

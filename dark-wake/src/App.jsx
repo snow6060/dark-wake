@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './App.css';
 import { getDailyTrafficDisplay } from './dailyTrafficDisplay.js';
 import SpatialIntelligence from "./SpatialIntelligence";
@@ -165,6 +165,15 @@ export default function App() {
   const [activeAnalysis, setActiveAnalysis] = useState(null);
   const [strategyDeskLoading, setStrategyDeskLoading] = useState(false);
   const [strategyDeskError, setStrategyDeskError] = useState('');
+  const [chartTimeframe, setChartTimeframe] = useState('1d');
+  const [chartTimeZoom, setChartTimeZoom] = useState(1);
+  const [chartPanOffset, setChartPanOffset] = useState(0);
+  const [chartPriceZoom, setChartPriceZoom] = useState(1);
+  const [chartPriceOffset, setChartPriceOffset] = useState(0);
+  const [chartHover, setChartHover] = useState(null);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartError, setChartError] = useState('');
+  const chartDragRef = useRef(null);
 
   // Chokepoint telemetry data state
   const [chokepointRecords, setChokepointRecords] = useState([]);
@@ -243,14 +252,7 @@ export default function App() {
 
   const safeSnapshotIdx = activeSnapshotIdx < displaySnapshots.length ? activeSnapshotIdx : 0;
   const activeSnapshot = displaySnapshots[safeSnapshotIdx] || displaySnapshots[0];
-  const [priceHistory, setPriceHistory] = useState([
-    { time: '2:00 AM', price: 100.50 },
-    { time: '4:00 AM', price: 100.80 },
-    { time: '6:00 AM', price: 99.20 },
-    { time: '8:00 AM', price: 98.50 },
-    { time: '10:00 AM', price: 97.60 },
-    { time: '12:00 PM', price: 100.95 }
-  ]);
+  const [priceHistory, setPriceHistory] = useState([]);
 
   const defaultArticles = [
     { id: 1, title: 'OPEC+ Signals Potential Output Adjustments as Brent Prices Shift', source: 'Reuters Energy', time_ago: '12m ago', sentiment: 'Bullish' },
@@ -258,29 +260,63 @@ export default function App() {
   ];
 
   useEffect(() => {
-    const fetchData = () => {
-      // Fetch the latest available Brent market snapshot
-      fetch(`${API_BASE_URL}/api/market/prices`)
-        .then(res => res.json())
-        .then(data => {
-          const price = Number(data?.price);
-          if (Number.isFinite(price) && price > 0) {
-            const changePct = data.change_pct == null ? Number.NaN : Number(data.change_pct);
-            setBrentData({
-              ...data,
-              price,
-              change_pct: Number.isFinite(changePct) ? changePct : null,
-            });
-            if (Array.isArray(data.history)) {
-              const validHistory = data.history
-                .filter(point => Number.isFinite(Number(point?.price)) && Number(point.price) > 0)
-                .map(point => ({ ...point, price: Number(point.price) }));
-              if (validHistory.length > 0) setPriceHistory(validHistory);
-            }
-          }
-        })
-        .catch(() => console.log("Market endpoint offline."));
+    let cancelled = false;
+    const fetchMarketSnapshot = () => {
+      fetch(`${API_BASE_URL}/api/market/prices?period=${chartTimeframe}`)
+        .then(async response => {
+          const data = await response.json();
+          if (!response.ok) throw new Error(data.detail || 'Market price history is unavailable.');
 
+          const price = Number(data?.price);
+          if (!Number.isFinite(price) || price <= 0) {
+            throw new Error('Market endpoint returned an invalid Brent price.');
+          }
+          const history = Array.isArray(data.history)
+            ? data.history
+              .filter(point => Number.isFinite(Number(point?.price)) && Number(point.price) > 0)
+              .map(point => ({ ...point, price: Number(point.price) }))
+            : [];
+          if (history.length === 0) throw new Error('No price history is available for this timeframe.');
+          return { ...data, price, history };
+        })
+        .then(data => {
+          if (cancelled) return;
+          const changePct = data.change_pct == null ? Number.NaN : Number(data.change_pct);
+          setBrentData({
+            ...data,
+            change_pct: Number.isFinite(changePct) ? changePct : null,
+          });
+          setPriceHistory(data.history);
+          setChartError('');
+          setChartLoading(false);
+        })
+        .catch(error => {
+          if (cancelled) return;
+          setChartError(error.message || 'Market endpoint offline.');
+          setChartLoading(false);
+        });
+    };
+
+    setChartLoading(true);
+    setChartError('');
+    fetchMarketSnapshot();
+    const interval = setInterval(fetchMarketSnapshot, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [chartTimeframe]);
+
+  useEffect(() => {
+    setChartTimeZoom(1);
+    setChartPanOffset(0);
+    setChartPriceZoom(1);
+    setChartPriceOffset(0);
+    setChartHover(null);
+  }, [chartTimeframe]);
+
+  useEffect(() => {
+    const fetchData = () => {
       // Fetch news feed
       fetch(`${API_BASE_URL}/api/news/feed`)
         .then(res => res.json())
@@ -400,21 +436,99 @@ export default function App() {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
 
-  // Price chart calculations
-  const prices = priceHistory.map(p => p.price);
-  const minPrice = Math.min(...prices) * 0.995;
-  const maxPrice = Math.max(...prices) * 1.005;
-  const priceRange = maxPrice - minPrice || 1;
+  const visibleCount = priceHistory.length
+    ? Math.max(2, Math.ceil(priceHistory.length / chartTimeZoom))
+    : 0;
+  const maxPanOffset = Math.max(0, priceHistory.length - visibleCount);
+  const boundedPanOffset = Math.min(maxPanOffset, Math.max(0, chartPanOffset));
+  const visibleStart = Math.max(0, priceHistory.length - visibleCount - boundedPanOffset);
+  const visiblePriceHistory = priceHistory.slice(visibleStart, visibleStart + visibleCount);
+  const visiblePrices = visiblePriceHistory.map(point => point.price);
+  const rawMinPrice = visiblePrices.length ? Math.min(...visiblePrices) : 0;
+  const rawMaxPrice = visiblePrices.length ? Math.max(...visiblePrices) : 1;
+  const rawPriceRange = Math.max(rawMaxPrice - rawMinPrice, rawMaxPrice * 0.002, 0.02);
+  const priceRange = rawPriceRange * 1.1 / chartPriceZoom;
+  const priceCenter = (rawMinPrice + rawMaxPrice) / 2 + chartPriceOffset;
+  const minPrice = priceCenter - priceRange / 2;
+  const maxPrice = priceCenter + priceRange / 2;
+  const priceY = price => 240 - ((price - minPrice) / priceRange) * 240;
+  const chartPoints = visiblePriceHistory.map((point, index) => {
+    const x = visiblePriceHistory.length > 1
+      ? index / (visiblePriceHistory.length - 1) * 600
+      : 300;
+    return { x, y: priceY(point.price), point };
+  });
+  const pointsString = chartPoints.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const polygonPoints = chartPoints.length
+    ? `0,240 ${pointsString} 600,240`
+    : '';
+  const lastPoint = chartPoints.at(-1);
+  const chartAxisPrices = visiblePriceHistory.length
+    ? Array.from({ length: 5 }, (_, index) => maxPrice - (priceRange * index / 4))
+    : [];
+  const chartTimeLabels = Array.from({ length: Math.min(6, visiblePriceHistory.length) }, (_, index) => {
+    const pointIndex = Math.round(
+      index * (visiblePriceHistory.length - 1) / Math.max(1, Math.min(6, visiblePriceHistory.length) - 1),
+    );
+    return visiblePriceHistory[pointIndex];
+  });
+  const chartTimeRangeLabel = visiblePriceHistory.length > 1
+    ? `${visiblePriceHistory[0].time} — ${visiblePriceHistory.at(-1).time}`
+    : 'No price history';
 
-  const pointsString = priceHistory.map((p, idx) => {
-    const x = (idx / (priceHistory.length - 1 || 1)) * 500;
-    const y = 200 - ((p.price - minPrice) / priceRange) * 200;
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
+  const handleChartPointerDown = event => {
+    event.currentTarget.setPointerCapture(event.pointerId);
+    chartDragRef.current = {
+      axis: event.currentTarget.dataset.axis || 'time',
+      x: event.clientX,
+      y: event.clientY,
+      panOffset: boundedPanOffset,
+      priceOffset: chartPriceOffset,
+      priceSpan: priceRange,
+    };
+  };
+  const handleChartPointerMove = event => {
+    const drag = chartDragRef.current;
+    if (drag?.axis === 'price') {
+      const rect = event.currentTarget.getBoundingClientRect();
+      setChartPriceOffset(drag.priceOffset + ((event.clientY - drag.y) / rect.height) * drag.priceSpan);
+      return;
+    }
 
-  const polygonPoints = `0,200 ${pointsString} 500,200`;
-  const lastPoint = priceHistory[priceHistory.length - 1] || { price: 100.95 };
-  const lastY = 200 - ((lastPoint.price - minPrice) / priceRange) * 200;
+    const svg = event.currentTarget.closest('.chart-plot-area')?.querySelector('svg');
+    if (!svg || visiblePriceHistory.length === 0) return;
+    const rect = svg.getBoundingClientRect();
+    const x = Math.min(600, Math.max(0, (event.clientX - rect.left) / rect.width * 600));
+    const y = Math.min(240, Math.max(0, (event.clientY - rect.top) / rect.height * 240));
+    const index = Math.round(x / 600 * Math.max(0, visiblePriceHistory.length - 1));
+    setChartHover({ x, y, index });
+    if (drag?.axis === 'time' && maxPanOffset > 0) {
+      const deltaPoints = (event.clientX - drag.x) / rect.width * visiblePriceHistory.length;
+      setChartPanOffset(Math.min(maxPanOffset, Math.max(0, drag.panOffset + deltaPoints)));
+    }
+  };
+  const handleChartPointerUp = event => {
+    chartDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  };
+  const handleChartWheel = event => {
+    event.preventDefault();
+    const factor = event.deltaY < 0 ? 1.2 : 1 / 1.2;
+    setChartTimeZoom(current => Math.min(
+      Math.max(1, priceHistory.length / 2),
+      Math.max(1, current * factor),
+    ));
+  };
+  const changeTimeframe = timeframe => {
+    setChartTimeframe(timeframe);
+    setPriceHistory([]);
+    setChartLoading(true);
+    setChartError('');
+    setChartPanOffset(0);
+    setChartTimeZoom(1);
+  };
 
   return (
     <div className="app-container">
@@ -500,48 +614,124 @@ export default function App() {
                   <div>
                     <h3 className="panel-title">Brent Crude Oil Futures (BZ=F)</h3>
                     <span className="chart-subtext">
-                      {brentData.price_basis === 'last_close'
+                      {brentData.history_interval === 'daily'
                         ? 'NY Mercantile // Daily Closing Prices'
-                        : 'NY Mercantile // Intraday Spot Trend'}
+                        : 'NY Mercantile // Intraday Price History'} · {chartTimeRangeLabel}
                     </span>
                   </div>
                   <span className="source-badge">Yahoo Finance</span>
                 </div>
 
+                <div className="chart-toolbar" aria-label="Price chart controls">
+                  <div className="chart-control-group" aria-label="Chart time interval">
+                    {[
+                      ['1d', '1D'],
+                      ['5d', '5D'],
+                      ['1mo', '1M'],
+                      ['3mo', '3M'],
+                    ].map(([period, label]) => (
+                      <button
+                        key={period}
+                        type="button"
+                        className={`chart-control-button ${chartTimeframe === period ? 'active' : ''}`}
+                        onClick={() => changeTimeframe(period)}
+                        aria-pressed={chartTimeframe === period}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="chart-control-group" aria-label="Time scale controls">
+                    <button type="button" className="chart-control-button" onClick={() => setChartTimeZoom(zoom => Math.min(Math.max(1, priceHistory.length / 2), zoom * 1.5))} aria-label="Zoom in on time">+</button>
+                    <button type="button" className="chart-control-button" onClick={() => setChartTimeZoom(zoom => Math.max(1, zoom / 1.5))} aria-label="Zoom out on time">−</button>
+                    <button type="button" className="chart-control-button chart-auto-button" onClick={() => { setChartTimeZoom(1); setChartPanOffset(0); }}>FIT</button>
+                  </div>
+                  <div className="chart-control-group chart-price-controls" aria-label="Price scale controls">
+                    <span>PRICE</span>
+                    <button type="button" className="chart-control-button" onClick={() => setChartPriceZoom(zoom => Math.min(20, zoom * 1.25))} aria-label="Zoom in on price">+</button>
+                    <button type="button" className="chart-control-button" onClick={() => setChartPriceZoom(zoom => Math.max(0.5, zoom / 1.25))} aria-label="Zoom out on price">−</button>
+                    <button type="button" className="chart-control-button chart-auto-button" onClick={() => { setChartPriceZoom(1); setChartPriceOffset(0); }}>AUTO</button>
+                  </div>
+                </div>
+
                 <div className="chart-canvas-area">
-                  <div className="chart-wrapper">
-                    <svg className="line-chart-svg" viewBox="0 0 500 200" preserveAspectRatio="none">
-                      <defs>
-                        <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                          <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.35" />
-                          <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.0" />
-                        </linearGradient>
-                      </defs>
-
-                      <line x1="0" y1="0" x2="500" y2="0" stroke="#1e293b" strokeDasharray="4 4" />
-                      <line x1="0" y1="50" x2="500" y2="50" stroke="#1e293b" strokeDasharray="4 4" />
-                      <line x1="0" y1="100" x2="500" y2="100" stroke="#1e293b" strokeDasharray="4 4" />
-                      <line x1="0" y1="150" x2="500" y2="150" stroke="#1e293b" strokeDasharray="4 4" />
-                      <line x1="0" y1="200" x2="500" y2="200" stroke="#1e293b" strokeDasharray="4 4" />
-
-                      <polygon fill="url(#chartGradient)" points={polygonPoints} />
-                      <polyline fill="none" stroke="#f43f5e" strokeWidth="2" points={pointsString} />
-                      <circle cx="500" cy={isNaN(lastY) ? 100 : lastY} r="4" fill="#f43f5e" />
-                    </svg>
-
-                    <div className="chart-y-axis">
-                      <span>{maxPrice.toFixed(2)}</span>
-                      <span>{(minPrice + priceRange * 0.75).toFixed(2)}</span>
-                      <span>{(minPrice + priceRange * 0.5).toFixed(2)}</span>
-                      <span>{(minPrice + priceRange * 0.25).toFixed(2)}</span>
-                      <span>{minPrice.toFixed(2)}</span>
+                  <div className="chart-plot-area">
+                    <div className="chart-wrapper">
+                      <svg
+                        className="line-chart-svg"
+                        viewBox="0 0 600 240"
+                        preserveAspectRatio="none"
+                        onPointerDown={handleChartPointerDown}
+                        onPointerMove={handleChartPointerMove}
+                        onPointerUp={handleChartPointerUp}
+                        onPointerCancel={handleChartPointerUp}
+                        onPointerLeave={() => {
+                          if (!chartDragRef.current) setChartHover(null);
+                        }}
+                        onWheel={handleChartWheel}
+                        aria-label="Interactive Brent price chart. Drag to pan, scroll to zoom."
+                      >
+                        <defs>
+                          <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
+                            <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.35" />
+                            <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.0" />
+                          </linearGradient>
+                        </defs>
+                        {Array.from({ length: 5 }, (_, index) => (
+                          <line key={index} x1="0" y1={index * 60} x2="600" y2={index * 60} className="chart-grid-line" />
+                        ))}
+                        {visiblePriceHistory.length > 0 && (
+                          <>
+                            <polygon fill="url(#chartGradient)" points={polygonPoints} />
+                            <polyline fill="none" stroke="#f43f5e" strokeWidth="2" points={pointsString} />
+                            {lastPoint && <circle cx={lastPoint.x} cy={lastPoint.y} r="3.5" fill="#f43f5e" />}
+                          </>
+                        )}
+                        {chartHover && visiblePriceHistory[chartHover.index] && (
+                          <>
+                            <line x1={chartHover.x} y1="0" x2={chartHover.x} y2="240" className="chart-crosshair" />
+                            <line x1="0" y1={chartHover.y} x2="600" y2={chartHover.y} className="chart-crosshair" />
+                            <circle
+                              cx={chartPoints[chartHover.index]?.x}
+                              cy={chartPoints[chartHover.index]?.y}
+                              r="4"
+                              className="chart-hover-point"
+                            />
+                          </>
+                        )}
+                      </svg>
+                      {chartHover && visiblePriceHistory[chartHover.index] && (
+                        <div
+                          className="chart-hover-tooltip"
+                          style={{ left: `${Math.min(78, Math.max(2, chartHover.x / 6))}%` }}
+                        >
+                          <strong>${visiblePriceHistory[chartHover.index].price.toFixed(2)}</strong>
+                          <span>{visiblePriceHistory[chartHover.index].time}</span>
+                        </div>
+                      )}
+                      {visiblePriceHistory.length === 0 && (
+                        <div className="chart-empty-state">
+                          {chartLoading ? 'Loading Brent price history…' : chartError || 'No Brent price history available.'}
+                        </div>
+                      )}
+                    </div>
+                    <div
+                      className="chart-y-axis"
+                      data-axis="price"
+                      onPointerDown={handleChartPointerDown}
+                      onPointerMove={handleChartPointerMove}
+                      onPointerUp={handleChartPointerUp}
+                      onPointerCancel={handleChartPointerUp}
+                      aria-label="Drag to pan the price scale"
+                    >
+                      {chartAxisPrices.map((price, index) => <span key={index}>{formatCurrency(price)}</span>)}
                     </div>
                   </div>
-
                   <div className="chart-x-axis">
-                    {priceHistory.map((p, idx) => (
-                      <span key={idx}>{p.time}</span>
-                    ))}
+                    {chartTimeLabels.map((point, index) => <span key={`${point.timestamp || point.time}-${index}`}>{point.time}</span>)}
+                  </div>
+                  <div className="chart-interaction-hint">
+                    Drag chart to pan · scroll to zoom time · drag price scale to adjust · {chartLoading ? 'Updating…' : chartTimeframe.toUpperCase()}
                   </div>
                 </div>
               </div>

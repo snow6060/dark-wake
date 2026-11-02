@@ -61,6 +61,47 @@ class BrentMarketSnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "no valid Brent daily closing prices"):
             get_brent_market_snapshot(datetime(2026, 10, 9, 16))
 
+    @patch("src.market_data.yf.Ticker")
+    def test_five_day_period_returns_intraday_history(self, ticker_factory):
+        ticker = MagicMock()
+        ticker_factory.return_value = ticker
+        ticker.history.return_value = _history(
+            [79.25, 80.5],
+            ["2026-10-08 10:00", "2026-10-09 15:00"],
+        )
+
+        snapshot = get_brent_market_snapshot(
+            datetime(2026, 10, 9, 16),
+            period="5d",
+        )
+
+        self.assertEqual(snapshot["price"], 80.5)
+        self.assertEqual(len(snapshot["history"]), 2)
+        self.assertIn("timestamp", snapshot["history"][0])
+        ticker.history.assert_called_once_with(period="5d", interval="15m")
+
+    @patch("src.market_data.yf.Ticker")
+    def test_three_month_period_uses_daily_history(self, ticker_factory):
+        ticker = MagicMock()
+        ticker_factory.return_value = ticker
+        ticker.history.return_value = _history(
+            [79.25, 80.5],
+            ["2026-10-08", "2026-10-09"],
+        )
+
+        snapshot = get_brent_market_snapshot(
+            datetime(2026, 10, 9, 16),
+            period="3mo",
+        )
+
+        self.assertEqual(snapshot["price"], 80.5)
+        self.assertEqual(snapshot["price_basis"], "last_close")
+        ticker.history.assert_called_once_with(period="3mo", interval="1d")
+
+    def test_unsupported_chart_period_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unsupported Brent chart period"):
+            get_brent_market_snapshot(period="1y")
+
 
 if __name__ == "__main__":
     unittest.main()

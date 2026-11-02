@@ -241,9 +241,11 @@ run_war_room_debate = run_strategy_desk_analysis
 
 
 @app.get("/api/market/prices")
-def get_market_prices():
+def get_market_prices(period: str = Query("1d", pattern="^(1d|5d|1mo|3mo)$")):
     try:
-        return get_brent_market_snapshot()
+        return get_brent_market_snapshot(period=period)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
