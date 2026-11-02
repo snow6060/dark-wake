@@ -8,6 +8,7 @@ class FakeResponse:
         self.status_code = status_code
         self.payload = payload or {"type": "FeatureCollection", "features": []}
         self.headers = headers or {}
+        self.text = ""
 
     def raise_for_status(self):
         if self.status_code >= 400:
@@ -161,7 +162,44 @@ def test_history_fetch_falls_back_to_narrower_window_after_server_error(monkeypa
     assert credits == "42"
     assert window_s == ais_client.HISTORY_WINDOW_FALLBACKS[1]
     assert len(calls) == ais_client.HISTORY_REQUEST_ATTEMPTS + 1
-    assert requested_windows == [86400, 86400, 86400, 21600]
+    assert requested_windows == [86400] * ais_client.HISTORY_REQUEST_ATTEMPTS + [21600]
+
+
+def test_history_fetch_immediately_falls_back_for_provider_window_query_error(monkeypatch):
+    monkeypatch.setattr(ais_client, "BASE", "https://data.aisvesseltracker.com")
+    requested_windows = []
+
+    def fake_get(_url, **kwargs):
+        window = kwargs["params"]["window"]
+        requested_windows.append(window)
+        if window == 86400:
+            return FakeResponse(500, {
+                "error": {
+                    "code": "server_error",
+                    "message": (
+                        "failed to query vessels in bounding box at the requested time"
+                    ),
+                },
+            })
+        return FakeResponse(200, headers={"X-Credits-Remaining": "42"})
+
+    monkeypatch.setattr(ais_client.requests, "get", fake_get)
+    monkeypatch.setattr(
+        ais_client.time,
+        "sleep",
+        lambda _seconds: pytest.fail("known query-window errors should not be retried"),
+    )
+
+    ships, credits, window_s = ais_client.fetch_bbox_history(
+        (56.3, 25.0, 56.7, 25.35),
+        "2026-10-26T07:02:30Z",
+        key="test",
+    )
+
+    assert ships == []
+    assert credits == "42"
+    assert window_s == 21600
+    assert requested_windows == [86400, 21600]
 
 
 def test_history_fetch_raises_after_all_fallback_windows_fail(monkeypatch):

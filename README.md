@@ -91,8 +91,11 @@ and SAM 3.1 processing, so an AIS provider error does not trigger redundant
 satellite-image processing.
 If the provider returns a server error for the requested 24-hour history window,
 the AIS client retries with narrower 6-hour, 1-hour, then 15-minute windows and
-records the successful window in the analysis summary. A successful empty result
-is kept as empty; it is never replaced with current/live AIS positions.
+records the successful window in the analysis summary. The provider's specific
+“failed to query vessels in bounding box at the requested time” error skips
+retries for that window and moves directly to the next narrower window. A
+successful empty result is kept as empty; it is never replaced with current/live
+AIS positions.
 RSS and telemetry ingestion and the periodic scheduler start after the bootstrap
 attempt. A bootstrap failure is logged and recorded as `failed` but does not
 prevent the API from starting; a later backend restart resumes it, skipping

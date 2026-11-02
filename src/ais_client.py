@@ -9,8 +9,24 @@ from dotenv import load_dotenv
 load_dotenv()
 BASE = os.getenv("AIS_API_BASE", "https://data.aisvesseltracker.com").rstrip("/")
 log = logging.getLogger(__name__)
-HISTORY_REQUEST_ATTEMPTS = 3
+HISTORY_REQUEST_ATTEMPTS = 6
 HISTORY_WINDOW_FALLBACKS = (86400, 21600, 3600, 900)
+
+
+def _is_unsupported_history_window(response):
+    if response.status_code != 500:
+        return False
+    try:
+        body = response.json()
+    except (AttributeError, ValueError):
+        return False
+    error = body.get("error") if isinstance(body, dict) else None
+    return (
+        isinstance(error, dict)
+        and error.get("code") == "server_error"
+        and error.get("message")
+        == "failed to query vessels in bounding box at the requested time"
+    )
 
 
 def parse_features(data):
@@ -91,6 +107,20 @@ def fetch_bbox_history(bbox, at_iso, window_s=86400, key=None, timeout=60):
                     return [], credits, current_window
                 r.raise_for_status()
                 return parse_features(r.json()), credits, current_window
+
+            if _is_unsupported_history_window(r):
+                if window_index + 1 < len(windows):
+                    log.warning(
+                        "AIS history provider could not query the %s-second window; "
+                        "trying the next narrower window.",
+                        current_window,
+                    )
+                    break
+                log.error(
+                    "AIS history provider could not query the final %s-second window.",
+                    current_window,
+                )
+                r.raise_for_status()
 
             if attempt + 1 < HISTORY_REQUEST_ATTEMPTS:
                 delay = 2 ** attempt
