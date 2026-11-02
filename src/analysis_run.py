@@ -102,9 +102,16 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam
     rep.progress(93, "Fetching AIS history")
     if ais_json:
         import json
-        ships, credits = parse_features(json.load(open(ais_json, encoding="utf-8-sig"))), "replay"
+        ships, credits, ais_window_s = (
+            parse_features(json.load(open(ais_json, encoding="utf-8-sig"))),
+            "replay",
+            None,
+        )
     else:
-        ships, credits = fetch_bbox_history(zone.bbox, pass_time.strftime("%Y-%m-%dT%H:%M:%SZ"))
+        ships, credits, ais_window_s = fetch_bbox_history(
+            zone.bbox,
+            pass_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
     rep.log(f"{len(ships)} AIS ships in the feed (credits left: {credits})")
 
     rep.progress(96, "Comparing AIS with the image")
@@ -122,6 +129,13 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam
     large = [h for h in hulls if h["length_m"] >= 150]
     large_matched = sum(1 for h in large if h["status"] == "matched")
     large_none = sum(1 for h in large if h["status"] == "dark")
+    ais_window_label = (
+        f"{ais_window_s // 3600} h"
+        if ais_window_s and ais_window_s >= 3600
+        else f"{ais_window_s // 60} min"
+        if ais_window_s
+        else None
+    )
 
     area_km2 = rgb.shape[0] * rgb.shape[1] * 1e-4
     n = len(hulls)
@@ -137,7 +151,14 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam
         "not_observable": res["not_observable"], "moving_dropped": res["moving_dropped"],
         "ais_visible_pct": round(100 * len(res["matched"]) / max(n, 1)),
         "feed_coverage_large": res["feed_coverage_large"], "ais_credits_left": credits,
-        "ais_note": "Voyage Radar terrestrial history; anchored ships trusted 24 h, moving 30 min",
+        "ais_window_s": ais_window_s,
+        "ais_note": (
+            "Voyage Radar terrestrial history; "
+            f"query window {ais_window_label} "
+            "when available; anchored ships trusted 24 h, moving 30 min"
+            if ais_window_s
+            else "Replay AIS data; anchored ships trusted 24 h, moving 30 min"
+        ),
         "method": ("classical proposals + SAM 3.1 verification (pairs + sample)" if sam_enabled
                    else "classical proposals (SAM verification off)"),
         "sam_contact_pairs": sum(1 for h in hulls if h["pair"] and (h.get("sam") or {}).get("contact")) // 2,

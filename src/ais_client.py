@@ -10,6 +10,7 @@ load_dotenv()
 BASE = os.getenv("AIS_API_BASE", "https://data.aisvesseltracker.com").rstrip("/")
 log = logging.getLogger(__name__)
 HISTORY_REQUEST_ATTEMPTS = 3
+HISTORY_WINDOW_FALLBACKS = (86400, 21600, 3600, 900)
 
 
 def parse_features(data):
@@ -57,40 +58,61 @@ def fetch_bbox_history(bbox, at_iso, window_s=86400, key=None, timeout=60):
         "at": at_iso,
         "window": window_s,
     }
-    for attempt in range(HISTORY_REQUEST_ATTEMPTS):
-        try:
-            r = requests.get(
-                f"{BASE}/v1/vessels/bbox/history",
-                headers={"X-API-Key": key},
-                params=params,
-                timeout=timeout,
-            )
-        except (requests.Timeout, requests.ConnectionError):
-            if attempt + 1 == HISTORY_REQUEST_ATTEMPTS:
-                raise
-            delay = 2 ** attempt
-            log.warning(
-                "AIS history request failed to connect; retrying in %s seconds (attempt %s/%s).",
-                delay,
-                attempt + 1,
-                HISTORY_REQUEST_ATTEMPTS,
-            )
-            time.sleep(delay)
-            continue
-        if r.status_code < 500 or attempt + 1 == HISTORY_REQUEST_ATTEMPTS:
-            break
-        delay = 2 ** attempt
-        log.warning(
-            "AIS history service returned HTTP %s; retrying in %s seconds (attempt %s/%s).",
-            r.status_code,
-            delay,
-            attempt + 1,
-            HISTORY_REQUEST_ATTEMPTS,
-        )
-        time.sleep(delay)
+    windows = list(dict.fromkeys(
+        [window_s, *(value for value in HISTORY_WINDOW_FALLBACKS if value < window_s)]
+    ))
+    for window_index, current_window in enumerate(windows):
+        params["window"] = current_window
+        for attempt in range(HISTORY_REQUEST_ATTEMPTS):
+            try:
+                r = requests.get(
+                    f"{BASE}/v1/vessels/bbox/history",
+                    headers={"X-API-Key": key},
+                    params=params,
+                    timeout=timeout,
+                )
+            except (requests.Timeout, requests.ConnectionError):
+                if attempt + 1 == HISTORY_REQUEST_ATTEMPTS:
+                    raise
+                delay = 2 ** attempt
+                log.warning(
+                    "AIS history request failed to connect; retrying in %s seconds "
+                    "(attempt %s/%s).",
+                    delay,
+                    attempt + 1,
+                    HISTORY_REQUEST_ATTEMPTS,
+                )
+                time.sleep(delay)
+                continue
 
-    credits = r.headers.get("X-Credits-Remaining")
-    if r.status_code == 204:
-        return [], credits
-    r.raise_for_status()
-    return parse_features(r.json()), credits
+            if r.status_code < 500:
+                credits = r.headers.get("X-Credits-Remaining")
+                if r.status_code == 204:
+                    return [], credits, current_window
+                r.raise_for_status()
+                return parse_features(r.json()), credits, current_window
+
+            if attempt + 1 < HISTORY_REQUEST_ATTEMPTS:
+                delay = 2 ** attempt
+                log.warning(
+                    "AIS history service returned HTTP %s; retrying in %s seconds "
+                    "(attempt %s/%s).",
+                    r.status_code,
+                    delay,
+                    attempt + 1,
+                    HISTORY_REQUEST_ATTEMPTS,
+                )
+                time.sleep(delay)
+                continue
+
+            if window_index + 1 < len(windows):
+                log.warning(
+                    "AIS history service returned HTTP %s for a %s-second window; "
+                    "retrying with a narrower historical window.",
+                    r.status_code,
+                    current_window,
+                )
+                break
+            r.raise_for_status()
+
+    raise RuntimeError("AIS history request ended without a response.")

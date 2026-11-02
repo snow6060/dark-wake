@@ -100,7 +100,7 @@ def test_analysis_requests_ais_at_scene_timestamp_and_persists_vessels(monkeypat
     monkeypatch.setattr(
         analysis_run,
         "fetch_bbox_history",
-        lambda bbox, at_iso: requested.append((bbox, at_iso)) or (vessels, "credits"),
+        lambda bbox, at_iso: requested.append((bbox, at_iso)) or (vessels, "credits", 86400),
     )
     monkeypatch.setattr(analysis_run, "match", lambda *_args, **_kwargs: dict(flags))
     monkeypatch.setattr(
@@ -113,3 +113,4 @@ def test_analysis_requests_ais_at_scene_timestamp_and_persists_vessels(monkeypat
 
     assert requested == [((56.0, 26.0, 57.0, 27.0), acquired_at)]
     assert supabase.saved_analysis["ais_vessels"] == vessels
+    assert supabase.saved_analysis["summary"]["ais_window_s"] == 86400

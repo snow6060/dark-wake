@@ -90,7 +90,7 @@ def test_history_fetch_retries_server_error_and_returns_success(monkeypatch):
     monkeypatch.setattr(ais_client.requests, "get", fake_get)
     monkeypatch.setattr(ais_client.time, "sleep", lambda _seconds: None)
 
-    ships, credits = ais_client.fetch_bbox_history(
+    ships, credits, window_s = ais_client.fetch_bbox_history(
         (56.3, 26.45, 56.7, 26.8),
         "2026-10-26T07:02:15Z",
         key="test",
@@ -98,6 +98,7 @@ def test_history_fetch_retries_server_error_and_returns_success(monkeypatch):
 
     assert ships == []
     assert credits == "42"
+    assert window_s == 86400
     assert len(requests_seen) == 2
     assert requests_seen[0] == requests_seen[1]
     assert requests_seen[0][1]["params"] == {
@@ -135,7 +136,35 @@ def test_history_fetch_does_not_retry_client_error(monkeypatch):
     assert len(calls) == 1
 
 
-def test_history_fetch_stops_after_bounded_server_error_retries(monkeypatch):
+def test_history_fetch_falls_back_to_narrower_window_after_server_error(monkeypatch):
+    monkeypatch.setattr(ais_client, "BASE", "https://data.aisvesseltracker.com")
+    calls = []
+    requested_windows = []
+
+    def fake_get(_url, **kwargs):
+        calls.append(True)
+        requested_windows.append(kwargs["params"]["window"])
+        if len(calls) == ais_client.HISTORY_REQUEST_ATTEMPTS + 1:
+            return FakeResponse(200, headers={"X-Credits-Remaining": "42"})
+        return FakeResponse(500)
+
+    monkeypatch.setattr(ais_client.requests, "get", fake_get)
+    monkeypatch.setattr(ais_client.time, "sleep", lambda _seconds: None)
+
+    ships, credits, window_s = ais_client.fetch_bbox_history(
+        (56.3, 26.45, 56.7, 26.8),
+        "2026-10-26T07:02:15Z",
+        key="test",
+    )
+
+    assert ships == []
+    assert credits == "42"
+    assert window_s == ais_client.HISTORY_WINDOW_FALLBACKS[1]
+    assert len(calls) == ais_client.HISTORY_REQUEST_ATTEMPTS + 1
+    assert requested_windows == [86400, 86400, 86400, 21600]
+
+
+def test_history_fetch_raises_after_all_fallback_windows_fail(monkeypatch):
     monkeypatch.setattr(ais_client, "BASE", "https://data.aisvesseltracker.com")
     calls = []
 
@@ -153,4 +182,6 @@ def test_history_fetch_stops_after_bounded_server_error_retries(monkeypatch):
             key="test",
         )
 
-    assert len(calls) == ais_client.HISTORY_REQUEST_ATTEMPTS
+    assert len(calls) == (
+        ais_client.HISTORY_REQUEST_ATTEMPTS * len(ais_client.HISTORY_WINDOW_FALLBACKS)
+    )

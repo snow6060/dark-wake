@@ -85,6 +85,10 @@ Debates are not scheduled, and their API host is restricted to
 On the first backend startup, `spatial_startup_state.spatial_image_ais_bootstrap_v2`
 is claimed once. Startup fetches images for active zones without one, then
 analyzes each zone against AIS history for that image's acquisition time.
+If the provider returns a server error for the requested 24-hour history window,
+the AIS client retries with narrower 6-hour, 1-hour, then 15-minute windows and
+records the successful window in the analysis summary. A successful empty result
+is kept as empty; it is never replaced with current/live AIS positions.
 RSS and telemetry ingestion and the periodic scheduler start only after this
 one-time sequence completes. A failure marks the bootstrap `failed` and stops
 backend startup. AIS history requests retry transient connection and server
