@@ -225,7 +225,7 @@ body {
 
 /* Interactive Brent price chart */
 .chart-panel {
-  align-self: start;
+  width: 100%;
   min-width: 0;
 }
 

@@ -36,6 +36,13 @@ const formatCurrency = value => {
     : '—';
 };
 
+const getNicePriceInterval = value => {
+  const magnitude = 10 ** Math.floor(Math.log10(value));
+  const normalized = value / magnitude;
+  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  return step * magnitude;
+};
+
 function DeskSignalPanel({ analysis, marketData, loading, error }) {
   const verdict = analysis?.verdict;
   const signal = String(verdict?.signal || 'HOLD').toLowerCase();
@@ -188,8 +195,7 @@ export default function App() {
   const [chartTimeframe, setChartTimeframe] = useState('1d');
   const [chartTimeZoom, setChartTimeZoom] = useState(1);
   const [chartPanOffset, setChartPanOffset] = useState(0);
-  const [chartPriceZoom, setChartPriceZoom] = useState(1);
-  const [chartPriceOffset, setChartPriceOffset] = useState(0);
+  const [chartPriceScale, setChartPriceScale] = useState(1);
   const [chartHover, setChartHover] = useState(null);
   const [chartLoading, setChartLoading] = useState(false);
   const [chartError, setChartError] = useState('');
@@ -330,8 +336,7 @@ export default function App() {
   useEffect(() => {
     setChartTimeZoom(1);
     setChartPanOffset(0);
-    setChartPriceZoom(1);
-    setChartPriceOffset(0);
+    setChartPriceScale(1);
     setChartHover(null);
   }, [chartTimeframe]);
 
@@ -467,10 +472,14 @@ export default function App() {
   const rawMinPrice = visiblePrices.length ? Math.min(...visiblePrices) : 0;
   const rawMaxPrice = visiblePrices.length ? Math.max(...visiblePrices) : 1;
   const rawPriceRange = Math.max(rawMaxPrice - rawMinPrice, rawMaxPrice * 0.002, 0.02);
-  const priceRange = rawPriceRange * 1.1 / chartPriceZoom;
-  const priceCenter = (rawMinPrice + rawMaxPrice) / 2 + chartPriceOffset;
-  const minPrice = priceCenter - priceRange / 2;
-  const maxPrice = priceCenter + priceRange / 2;
+  const priceInterval = getNicePriceInterval(rawPriceRange * chartPriceScale / 4);
+  let minPrice = Math.floor(rawMinPrice / priceInterval) * priceInterval;
+  let maxPrice = Math.ceil(rawMaxPrice / priceInterval) * priceInterval;
+  if (maxPrice <= minPrice) {
+    minPrice -= priceInterval;
+    maxPrice += priceInterval;
+  }
+  const priceRange = maxPrice - minPrice;
   const priceY = price => 240 - ((price - minPrice) / priceRange) * 240;
   const chartPoints = visiblePriceHistory.map((point, index) => {
     const x = visiblePriceHistory.length > 1
@@ -484,7 +493,10 @@ export default function App() {
     : '';
   const lastPoint = chartPoints.at(-1);
   const chartAxisPrices = visiblePriceHistory.length
-    ? Array.from({ length: 5 }, (_, index) => maxPrice - (priceRange * index / 4))
+    ? Array.from(
+      { length: Math.round(priceRange / priceInterval) + 1 },
+      (_, index) => maxPrice - index * priceInterval,
+    )
     : [];
   const chartTimeLabels = Array.from({ length: Math.min(6, visiblePriceHistory.length) }, (_, index) => {
     const pointIndex = Math.round(
@@ -503,15 +515,14 @@ export default function App() {
       x: event.clientX,
       y: event.clientY,
       panOffset: boundedPanOffset,
-      priceOffset: chartPriceOffset,
-      priceSpan: priceRange,
+      priceScale: chartPriceScale,
     };
   };
   const handleChartPointerMove = event => {
     const drag = chartDragRef.current;
     if (drag?.axis === 'price') {
-      const rect = event.currentTarget.getBoundingClientRect();
-      setChartPriceOffset(drag.priceOffset + ((event.clientY - drag.y) / rect.height) * drag.priceSpan);
+      const deltaY = event.clientY - drag.y;
+      setChartPriceScale(Math.min(10000, Math.max(1, drag.priceScale * Math.exp(deltaY / 40))));
       return;
     }
 
@@ -548,6 +559,7 @@ export default function App() {
     setChartError('');
     setChartPanOffset(0);
     setChartTimeZoom(1);
+    setChartPriceScale(1);
   };
 
   return (
@@ -667,10 +679,10 @@ export default function App() {
                     <button type="button" className="chart-control-button chart-auto-button" onClick={() => { setChartTimeZoom(1); setChartPanOffset(0); }}>FIT</button>
                   </div>
                   <div className="chart-control-group chart-price-controls" aria-label="Price scale controls">
-                    <span>PRICE</span>
-                    <button type="button" className="chart-control-button" onClick={() => setChartPriceZoom(zoom => Math.min(20, zoom * 1.25))} aria-label="Zoom in on price">+</button>
-                    <button type="button" className="chart-control-button" onClick={() => setChartPriceZoom(zoom => Math.max(0.5, zoom / 1.25))} aria-label="Zoom out on price">−</button>
-                    <button type="button" className="chart-control-button chart-auto-button" onClick={() => { setChartPriceZoom(1); setChartPriceOffset(0); }}>AUTO</button>
+                    <span>$/LEVEL</span>
+                    <button type="button" className="chart-control-button" onClick={() => setChartPriceScale(scale => Math.max(1, scale / 1.25))} aria-label="Decrease price interval">+</button>
+                    <button type="button" className="chart-control-button" onClick={() => setChartPriceScale(scale => Math.min(10000, scale * 1.25))} aria-label="Increase price interval">−</button>
+                    <button type="button" className="chart-control-button chart-auto-button" onClick={() => setChartPriceScale(1)}>AUTO</button>
                   </div>
                 </div>
 
@@ -697,8 +709,15 @@ export default function App() {
                             <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.0" />
                           </linearGradient>
                         </defs>
-                        {Array.from({ length: 5 }, (_, index) => (
-                          <line key={index} x1="0" y1={index * 60} x2="600" y2={index * 60} className="chart-grid-line" />
+                        {Array.from({ length: chartAxisPrices.length || 5 }, (_, index) => (
+                          <line
+                            key={index}
+                            x1="0"
+                            y1={chartAxisPrices.length ? priceY(chartAxisPrices[index]) : index * 60}
+                            x2="600"
+                            y2={chartAxisPrices.length ? priceY(chartAxisPrices[index]) : index * 60}
+                            className="chart-grid-line"
+                          />
                         ))}
                         {visiblePriceHistory.length > 0 && (
                           <>
@@ -742,7 +761,7 @@ export default function App() {
                       onPointerMove={handleChartPointerMove}
                       onPointerUp={handleChartPointerUp}
                       onPointerCancel={handleChartPointerUp}
-                      aria-label="Drag to pan the price scale"
+                      aria-label={`Price interval ${formatCurrency(priceInterval)} per level. Drag vertically to change interval.`}
                     >
                       {chartAxisPrices.map((price, index) => <span key={index}>{formatCurrency(price)}</span>)}
                     </div>
@@ -751,7 +770,7 @@ export default function App() {
                     {chartTimeLabels.map((point, index) => <span key={`${point.timestamp || point.time}-${index}`}>{point.time}</span>)}
                   </div>
                   <div className="chart-interaction-hint">
-                    Drag chart to pan · scroll to zoom time · drag price scale to adjust · {chartLoading ? 'Updating…' : chartTimeframe.toUpperCase()}
+                    Drag chart to pan · scroll to zoom time · drag price scale to change $/level ({formatCurrency(priceInterval)}) · {chartLoading ? 'Updating…' : chartTimeframe.toUpperCase()}
                   </div>
                 </div>
               </div>
