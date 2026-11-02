@@ -44,8 +44,28 @@ class StartupSupabase:
         self.claims = 0
 
     def table(self, name):
-        assert name == "spatial_startup_state"
-        return StartupStateQuery(self)
+        if name == "spatial_startup_state":
+            return StartupStateQuery(self)
+        if name == "spatial_snapshots":
+            return StartupSnapshotQuery()
+        raise AssertionError(f"Unexpected table: {name}")
+
+
+class StartupSnapshotQuery:
+    def select(self, _columns):
+        return self
+
+    def eq(self, _column, _value):
+        return self
+
+    def order(self, *_args, **_kwargs):
+        return self
+
+    def limit(self, _count):
+        return self
+
+    def execute(self):
+        return SimpleNamespace(data=[{"id": 1}])
 
 
 def test_startup_live_analysis_claims_persisted_gate_once(monkeypatch):
@@ -58,3 +78,27 @@ def test_startup_live_analysis_claims_persisted_gate_once(monkeypatch):
 
     assert client.claims == 1
     assert client.row["status"] == "complete"
+
+
+def test_failed_startup_live_analysis_is_not_retried_automatically(monkeypatch):
+    client = StartupSupabase()
+    attempts = []
+
+    def fail_analysis(zone_id):
+        attempts.append(zone_id)
+        raise RuntimeError("live AIS unavailable")
+
+    monkeypatch.setattr("src.supabase_client.supabase", client)
+    monkeypatch.setattr(
+        "src.spatial_config.load_active_zones",
+        lambda: [SimpleNamespace(zone_id="hormuz")],
+    )
+    monkeypatch.setattr("src.analysis_run.analyze_latest", fail_analysis)
+
+    spatial_jobs._run_startup_live_analysis()
+    spatial_jobs._run_startup_live_analysis()
+
+    assert attempts == ["hormuz"]
+    assert client.claims == 1
+    assert client.row["status"] == "failed"
+    assert "live AIS unavailable" in client.row["error"]
