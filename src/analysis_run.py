@@ -147,6 +147,7 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True):
         supabase.table("spatial_analysis").upsert({
             "snapshot_id": snap["id"], "zone_id": zone_id, "scene_id": snap["scene_id"],
             "acquired_at": snap["acquired_at"], "summary": summary, "hulls": hulls, "flags": res,
+            "ais_vessels": ships,
             "method": summary["method"],
         }, on_conflict="snapshot_id").execute()
         supabase.table("spatial_snapshots").update(

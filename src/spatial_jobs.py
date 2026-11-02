@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 import threading
 import uuid
 import logging
@@ -146,6 +147,88 @@ def _fetch_missing_zones():
             log.info("Startup spatial fetch %s: %s", result.get("zone"), result.get("status"))
 
 
+def _run_startup_live_analysis():
+    from src.analysis_run import analyze_latest
+    from src.spatial_config import load_active_zones
+    from src.supabase_client import supabase
+
+    if supabase is None:
+        log.warning("Startup live AIS analysis skipped: Supabase is not configured.")
+        return
+
+    state_table = supabase.table("spatial_startup_state")
+    state = (
+        state_table.select("status")
+        .eq("startup_key", "live_ais_bootstrap")
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not state:
+        log.error("Startup live AIS analysis not started: run sql/clear_mock_spatial_ais.sql first.")
+        return
+    if state[0]["status"] != "pending":
+        log.info("Startup live AIS analysis already attempted (status: %s).", state[0]["status"])
+        return
+
+    claim = (
+        state_table.update({
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "error": None,
+        })
+        .eq("startup_key", "live_ais_bootstrap")
+        .eq("status", "pending")
+        .select("startup_key")
+        .execute()
+        .data
+        or []
+    )
+    if not claim:
+        log.info("Startup live AIS analysis was claimed by another backend instance.")
+        return
+
+    failures = []
+    try:
+        with _WORK_LOCK:
+            for zone in load_active_zones():
+                try:
+                    snapshots = (
+                        supabase.table("spatial_snapshots")
+                        .select("id")
+                        .eq("zone_id", zone.zone_id)
+                        .order("acquired_at", desc=True)
+                        .limit(1)
+                        .execute()
+                        .data
+                        or []
+                    )
+                    if not snapshots:
+                        log.info("Startup live AIS analysis skipped %s: no stored image.", zone.zone_id)
+                        continue
+                    analyze_latest(zone.zone_id)
+                    log.info("Startup live AIS analysis completed for %s.", zone.zone_id)
+                except Exception as exc:
+                    failures.append(f"{zone.zone_id}: {exc}")
+                    log.exception("Startup live AIS analysis failed for %s.", zone.zone_id)
+    except Exception as exc:
+        failures.append(f"startup: {exc}")
+        log.exception("Could not load active zones for startup live AIS analysis.")
+
+    status = "failed" if failures else "complete"
+    update = {
+        "status": status,
+        "completed_at": datetime.now(timezone.utc).isoformat(),
+        "error": "; ".join(failures)[:2000] if failures else None,
+    }
+    state_table.update(update).eq("startup_key", "live_ais_bootstrap").eq("status", "running").execute()
+    if failures:
+        log.error("Startup live AIS analysis completed with errors: %s", "; ".join(failures))
+    else:
+        log.info("One-time startup live AIS analysis completed.")
+
+
 def start_missing_zone_fetch():
     global _STARTUP_FETCH_STARTED
     with _STARTUP_FETCH_LOCK:
@@ -157,6 +240,10 @@ def start_missing_zone_fetch():
             _fetch_missing_zones()
         except Exception:
             log.exception("Startup spatial fetch failed.")
+        try:
+            _run_startup_live_analysis()
+        except Exception:
+            log.exception("One-time startup live AIS analysis failed.")
 
-    thread = threading.Thread(target=run, name="spatial-startup-fetch", daemon=True)
+    thread = threading.Thread(target=run, name="spatial-startup-tasks", daemon=True)
     thread.start()

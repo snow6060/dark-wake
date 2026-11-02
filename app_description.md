@@ -438,20 +438,22 @@ The V2 tab is a real-data Sentinel-2/AIS workflow, not the former congestion-sco
 ### 16.1 Image and AIS pipeline
 - Active zones and captures are read from Supabase. Sentinel-2 imagery is searched through AWS Earth Search and stored in the `satellite-snapshots` bucket; without a capture, the app does not invent vessel counts.
 - `src/vessel_census.py` proposes hulls from the image. SAM 3 image segmentation is an optional verifier (`SAM_ENABLE=1`); the normal analysis can run with SAM off. SAM 3.1 Object Multiplex video tracking and dwell tracking are not implemented.
-- AIS matching uses Voyage Radar history through `src/ais_client.py`. Use the sandbox endpoint configured in local `.env` while developing; do not scrape VesselFinder.
+- AIS matching uses Voyage Radar's documented historical bounding-box endpoint through `src/ais_client.py`. The server sends its API key in the `X-API-Key` header, uses live AIS only, and requests data at the satellite scene's acquisition timestamp. Sandbox hosts are rejected before a request is sent.
 - The UI reports measured hull size and AIS-match status, not cargo or ship class. “No AIS match” is not proof AIS is off; ghosts and alongside pairs are candidates, not proof of spoofing or transfer. Scene age and cloud cover accompany the results.
 - Spatial routes include `/api/spatial/zones`, `/api/spatial/zones/{zone_id}/analysis`, `/api/spatial/zones/{zone_id}/run`, and `/api/spatial/jobs/{job_id}`. A stored image with no analysis is shown as pending.
-- Creating `public.spatial_analysis` in Supabase is a deployment prerequisite; apply [sql/spatial_analysis.sql](./sql/spatial_analysis.sql) before persisting new analysis.
+- Apply [sql/spatial_analysis.sql](./sql/spatial_analysis.sql) to create the analysis table. To remove previously stored AIS-derived results while retaining satellite captures, run [sql/clear_mock_spatial_ais.sql](./sql/clear_mock_spatial_ais.sql) once in Supabase before starting the backend. It creates a persisted startup gate, clears analysis rows whose AIS provenance was not recorded, and marks captures pending for reanalysis.
+- The first backend startup after that SQL runs one live, timestamp-matched analysis for each active zone with a stored image. A persisted `complete`, `failed`, or interrupted `running` status prevents repeat AIS calls on later restarts. After resolving the cause, an operator must deliberately reset `spatial_startup_state.status` to `pending` before retrying.
 
 ### 16.2 Strategy Desk Integration (`src/agents.py`)
 - Spatial evidence is built from stored `spatial_analysis` rows and exposed in the response as `spatial_behaviour`; the retired `spatial_congestion` field is `null`.
 - Prompt evidence is routed by debate role: Supply gets all zone lines, Demand gets Singapore plus the global line, synthesis gets aggregate flags and data quality, and Technical gets none. End-to-end debate validation remains pending while Meta calls are disabled.
 
 ### 16.3 Frontend — Spatial Intelligence V2 (`dark-wake/src/SpatialIntelligence.jsx`)
-- Per-zone status cards, independent zone selection checkboxes, and a switchable detail view with radar, optical imagery, and AIS/hull lists.
-- “Fetch latest image + run analysis” processes only the checked zones, sequentially, with per-zone job progress.
-- At backend startup, missing images are fetched asynchronously for active zones; startup does not rerun analysis or block API readiness on satellite downloads.
-- Data is loaded from the backend API. If a capture exists but has no analysis, the real image is shown with an explicit pending status.
+- Per-zone status cards switch the active detail view. The top-right “Fetch latest image and run analysis” action opens a zone checklist; selected zones are processed sequentially with job progress.
+- Radar and optical views support 1x/2x/4x zoom and pointer-drag panning. The optical capture is fit to the viewport at 1x. AIS vessel details appear below the viewer.
+- Strait of Hormuz offers a combined view and Iran-side/Oman-side sectors. Sector filters split the configured Strait bounding box at its latitude midpoint; the AIS request still uses the parent-zone box so the combined view retains full coverage.
+- Voyage Radar provides AIS vessel identity, type, flag, and country, but not sanctions determinations. The UI labels sanctions status “Not assessed”; this is not a determination that a vessel is unsanctioned.
+- At backend startup, missing images are fetched asynchronously before the one-time live AIS bootstrap. If a capture exists but has no analysis, the real image is shown with an explicit pending status.
 - The old mock tab is available only as a temporary fallback when `VITE_SPATIAL_V2` is not enabled.
 
 ### 16.4 n8n Media Contract (`POST /api/strategy-desk/run` & `/api/strategy-desk/debates`)

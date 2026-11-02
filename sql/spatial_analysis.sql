@@ -7,9 +7,13 @@ create table if not exists public.spatial_analysis (
     acquired_at timestamptz not null,
     summary jsonb not null,
     hulls jsonb not null,
+    ais_vessels jsonb not null default '[]'::jsonb,
     flags jsonb not null,
     method text not null,
     computed_at timestamptz not null default now()
 );
+
+alter table public.spatial_analysis
+    add column if not exists ais_vessels jsonb not null default '[]'::jsonb;
 
 alter table public.spatial_analysis enable row level security;

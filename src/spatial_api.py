@@ -183,7 +183,13 @@ def zone_analysis(zone_id: str):
     if not zones:
         raise HTTPException(status_code=404, detail=f"Unknown zone '{zone_id}'.")
     z = zones[0]
-    zone_info = {k: z[k] for k in ("zone_id", "display_name", "kind", "ref_lat", "ref_lon", "range_rings_km")}
+    zone_info = {k: z[k] for k in (
+        "zone_id", "display_name", "kind", "ref_lat", "ref_lon", "range_rings_km",
+        "bbox_west", "bbox_south", "bbox_east", "bbox_north",
+    )}
+    zone_info["bbox"] = [
+        z["bbox_west"], z["bbox_south"], z["bbox_east"], z["bbox_north"],
+    ]
     snapshots = (
         client.table("spatial_snapshots")
         .select("id,image_url,width_px,height_px,cloud_pct,acquired_at,status")
@@ -200,6 +206,7 @@ def zone_analysis(zone_id: str):
             "snapshot": None,
             "summary": None,
             "hulls": [],
+            "ais_vessels": [],
             "ghosts": [],
             "displaced": [],
             "message": "No clear capture stored yet. Run a new analysis to look for one.",
@@ -220,6 +227,7 @@ def zone_analysis(zone_id: str):
             "snapshot": snap,
             "summary": None,
             "hulls": [],
+            "ais_vessels": [],
             "ghosts": [],
             "displaced": [],
             "message": "Latest capture is stored; analysis is pending. Run a new analysis to process it.",
@@ -233,6 +241,7 @@ def zone_analysis(zone_id: str):
     flags = a["flags"]
     return {"zone": zone_info, "snapshot": snap, "summary": a["summary"],
             "hulls": [{**h, **rb(h)} for h in a["hulls"]],
+            "ais_vessels": a.get("ais_vessels") or [],
             "ghosts": [{**g, **rb(g)} for g in flags.get("ghost", [])],
             "displaced": flags.get("displaced", [])}
 

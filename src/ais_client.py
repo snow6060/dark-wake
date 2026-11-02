@@ -1,26 +1,48 @@
 import os
+from urllib.parse import urlparse
 
 import requests
 from dotenv import load_dotenv
 
 load_dotenv()
-BASE = os.getenv("AIS_API_BASE", "https://sandbox.aisvesseltracker.com")
+BASE = os.getenv("AIS_API_BASE", "https://data.aisvesseltracker.com").rstrip("/")
 
 
 def parse_features(data):
     ships = []
     for f in data.get("features", []):
-        p, (lon, lat) = f.get("properties") or {}, f["geometry"]["coordinates"][:2]
+        p = f.get("properties") or {}
+        geometry = f.get("geometry") or {}
+        coordinates = geometry.get("coordinates") or []
+        if len(coordinates) >= 2:
+            lon, lat = coordinates[:2]
+        elif p.get("longitude") is not None and p.get("latitude") is not None:
+            lon, lat = p["longitude"], p["latitude"]
+        else:
+            raise ValueError("AIS feature is missing vessel coordinates.")
         ships.append({
-            "mmsi": p.get("mmsi"), "name": p.get("name"), "lat": lat, "lon": lon,
-            "sog": p.get("sog") or 0, "cog": p.get("cog"), "heading": p.get("heading"),
-            "nav": p.get("navStatus"), "type_code": p.get("type"), "ship_type": p.get("shipType"),
-            "time_utc": p.get("time_utc"),
+            "mmsi": p.get("mmsi") or p.get("id"),
+            "name": p.get("shipName") or p.get("name"),
+            "lat": lat,
+            "lon": lon,
+            "sog": p.get("sog") or p.get("speedOverGround") or 0,
+            "cog": p.get("cog") if p.get("cog") is not None else p.get("courseOverGround"),
+            "heading": p.get("heading"),
+            "nav": p.get("navStatus") or p.get("navigationalStatus"),
+            "type_code": p.get("type"),
+            "ship_type": p.get("shipType"),
+            "country": p.get("country"),
+            "flag": p.get("flag"),
+            "imo": p.get("imo") or p.get("imoNumber"),
+            "time_utc": p.get("time_utc") or p.get("timestamp"),
         })
     return ships
 
 
 def fetch_bbox_history(bbox, at_iso, window_s=86400, key=None, timeout=60):
+    host = urlparse(BASE).hostname
+    if not host or "sandbox" in host.lower():
+        raise RuntimeError("Live AIS is required, but AIS_API_BASE points to the sandbox.")
     key = key or os.environ["VOYAGE_RADAR_API_KEY"]
     west, south, east, north = bbox
     r = requests.get(
