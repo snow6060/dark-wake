@@ -11,6 +11,7 @@ from src.agents import (
     MetaModelAPIError,
     MetaModelQuotaError,
     _context_prompt,
+    _desk_signal_synthesis,
     _format_strategy_desk_payload,
     _invoke,
     _initial_analysis,
@@ -172,7 +173,6 @@ class StrategyDeskLoadingTests(unittest.TestCase):
                 "initial_technical": "Technical view",
             },
         )
-
         self.assertEqual(
             result,
             {
@@ -180,6 +180,49 @@ class StrategyDeskLoadingTests(unittest.TestCase):
                 "supply_direction": "UP",
             },
         )
+
+    @patch("src.agents._context_prompt", return_value=(
+        '{"live_context":{"price":80.0,"commodity_basket":{"BZ=F":{"rsi_14":55}},'
+        '"telemetry":[{"chokepoint_name":"Hormuz"}],"headlines":[{"title":"Supply update"}]}}'
+    ))
+    @patch("src.agents._invoke", return_value=json.dumps({
+        "signal": "HOLD",
+        "conviction": 55,
+        "short_term_trend": "NEUTRAL",
+        "long_term_trend": "NEUTRAL",
+        "support": 79,
+        "resistance": 81,
+        "rationale": "Market evidence is mixed.",
+        "risk_factors": [],
+    }))
+    def test_synthesis_combines_market_context_and_spatial_agent(
+        self,
+        invoke,
+        _context_prompt,
+    ):
+        state = {
+            "market_context": {"price": 80.0},
+            "spatial_analysis": "Two active zones show elevated vessel congestion.",
+            "initial_technical": "RSI is 55.",
+            "initial_supply_thesis": "Supply risk is elevated.",
+            "initial_demand_thesis": "Demand remains uncertain.",
+            "supply_rebuttal_1": "Current inventories temper the risk.",
+            "demand_rebuttal_1": "Shipping data does not establish consumption.",
+            "supply_rebuttal_2": "Export constraints remain possible.",
+            "demand_rebuttal_2": "The demand evidence remains mixed.",
+        }
+
+        _desk_signal_synthesis(state)
+
+        prompt = invoke.call_args.args[1]
+        self.assertIn('"price":80.0', prompt)
+        self.assertIn('"telemetry"', prompt)
+        self.assertIn('"headlines"', prompt)
+        self.assertIn("Two active zones show elevated vessel congestion.", prompt)
+        self.assertIn("Supply risk is elevated.", prompt)
+        self.assertIn("Demand remains uncertain.", prompt)
+        self.assertIn("market context", prompt)
+        self.assertIn("not instead of", prompt)
 
     def test_weekend_last_close_is_explicit_in_agent_context(self):
         prompt = _context_prompt(

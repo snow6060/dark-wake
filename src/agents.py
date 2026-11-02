@@ -852,11 +852,26 @@ def _parse_verdict(response: str) -> dict[str, Any]:
 
 def _desk_signal_synthesis(state: DebateState) -> dict[str, Any]:
     context = state["market_context"]
+    agent_analyses = {
+        key: state.get(key, "")
+        for key in (
+            "initial_technical",
+            "initial_supply_thesis",
+            "initial_demand_thesis",
+            "supply_rebuttal_1",
+            "demand_rebuttal_1",
+            "supply_rebuttal_2",
+            "demand_rebuttal_2",
+        )
+    }
     prompt = (
         f"{_context_prompt(state, AGENTS['synthesis']['name'])}\n\n"
-        f"DESK ANALYSES:\n{json.dumps({key: state[key] for key in ('initial_technical', 'initial_supply_thesis', 'initial_demand_thesis', 'supply_rebuttal_1', 'demand_rebuttal_1', 'supply_rebuttal_2', 'demand_rebuttal_2')}, ensure_ascii=False)}\n\n"
-        "Deliver a risk-managed synthesis for the current Brent price. Reconcile the technical "
-        "analysis with the supply and demand theses. Compare the prior synthesis and all "
+        f"SPATIAL INTELLIGENCE ANALYSIS:\n{state.get('spatial_analysis', 'Unavailable')}\n\n"
+        f"DEBATE ANALYSES:\n{json.dumps(agent_analyses, ensure_ascii=False)}\n\n"
+        "Deliver a risk-managed synthesis for the current Brent price. Use the spatial analysis "
+        "as additional evidence alongside—not instead of—the supplied market context, commodity "
+        "indicators, telemetry, headlines, technical analysis, supply thesis, demand thesis, and "
+        "rebuttals. Reconcile the technical analysis with the supply and demand theses. Compare the prior synthesis and all "
         "three prior agent analyses with current evidence; say what changed and avoid treating "
         "the old forecast as established fact. Avoid false precision. "
         "Respond ONLY as JSON with this exact shape: "
