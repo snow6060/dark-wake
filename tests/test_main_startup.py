@@ -1,7 +1,6 @@
 import asyncio
 
 import main
-import pytest
 
 
 def test_spatial_bootstrap_finishes_before_other_startup_fetches(monkeypatch):
@@ -42,7 +41,7 @@ def test_spatial_bootstrap_finishes_before_other_startup_fetches(monkeypatch):
     ]
 
 
-def test_spatial_bootstrap_failure_stops_backend_startup(monkeypatch):
+def test_spatial_bootstrap_failure_does_not_stop_backend_startup(monkeypatch, caplog):
     events = []
 
     async def run_in_thread(function):
@@ -66,9 +65,17 @@ def test_spatial_bootstrap_failure_stops_backend_startup(monkeypatch):
 
     async def start_backend():
         async with main.lifespan(main.app):
-            pass
+            events.append("serving")
 
-    with pytest.raises(RuntimeError, match="satellite fetch failed"):
-        asyncio.run(start_backend())
+    asyncio.run(start_backend())
 
-    assert events == ["database", "bootstrap:start"]
+    assert events == [
+        "database",
+        "bootstrap:start",
+        "straits",
+        "hormuz",
+        "rss",
+        "scheduler",
+        "serving",
+    ]
+    assert "continuing backend startup" in caplog.text

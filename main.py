@@ -1,5 +1,6 @@
 import os
 import asyncio
+import logging
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -33,11 +34,19 @@ from src.agents import (
 )
 from src.market_data import get_brent_market_snapshot
 
+log = logging.getLogger(__name__)
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
     from src.spatial_jobs import run_startup_spatial_bootstrap
-    await asyncio.to_thread(run_startup_spatial_bootstrap)
+    try:
+        await asyncio.to_thread(run_startup_spatial_bootstrap)
+    except Exception:
+        log.exception(
+            "Spatial startup bootstrap did not complete; continuing backend startup. "
+            "The bootstrap can resume on a later restart."
+        )
     fetch_straits_live_chokepoint_data()
     fetch_straits_live_hormuz_data()
     fetch_and_store_rss_headlines()

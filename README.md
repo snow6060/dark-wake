@@ -93,12 +93,14 @@ If the provider returns a server error for the requested 24-hour history window,
 the AIS client retries with narrower 6-hour, 1-hour, then 15-minute windows and
 records the successful window in the analysis summary. A successful empty result
 is kept as empty; it is never replaced with current/live AIS positions.
-RSS and telemetry ingestion and the periodic scheduler start only after this
-one-time sequence completes. A failure marks the bootstrap `failed` and stops
-backend startup. AIS history requests retry transient connection and server
-errors up to three times with backoff. A later manual backend restart resumes a
-failed bootstrap, skipping zones whose latest snapshot is already verified;
-successful completion is still recorded once and skipped on future startups.
+RSS and telemetry ingestion and the periodic scheduler start after the bootstrap
+attempt. A bootstrap failure is logged and recorded as `failed` but does not
+prevent the API from starting; a later backend restart resumes it, skipping
+zones whose latest snapshot is already verified. Failed/incomplete zones remain
+unavailable for scene-matched analysis until AIS retrieval succeeds. Successful
+completion is recorded once and skipped on future startups. AIS history
+requests retry transient connection and server errors up to three times with
+backoff.
 The running state is renewed every 20 seconds; a later startup can reclaim the
 lease if its last heartbeat is over two minutes old, while a fresh lease blocks
 concurrent startup work.
