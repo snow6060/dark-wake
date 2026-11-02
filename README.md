@@ -95,6 +95,9 @@ backend startup. AIS history requests retry transient connection and server
 errors up to three times with backoff. A later manual backend restart resumes a
 failed bootstrap, skipping zones whose latest snapshot is already verified;
 successful completion is still recorded once and skipped on future startups.
+The running state is renewed every 20 seconds; a later startup can reclaim the
+lease if its last heartbeat is over two minutes old, while a fresh lease blocks
+concurrent startup work.
 
 ## Build and sign the Windows installer with SignPath
 

@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
@@ -13,16 +14,23 @@ class StartupStateQuery:
         self.returning = False
 
     def select(self, _columns):
+        if self.values is None:
+            self.filters = {}
         self.returning = True
         return self
 
     def update(self, values):
+        self.filters = {}
         self.values = values
         self.returning = False
         return self
 
     def eq(self, column, value):
         self.filters[column] = value
+        return self
+
+    def is_(self, column, value):
+        self.filters[column] = None if value == "null" else value
         return self
 
     def limit(self, _count):
@@ -100,3 +108,47 @@ def test_failed_bootstrap_can_resume_on_later_startup(monkeypatch):
     assert events == ["images", "scene-matched-ais", "images", "scene-matched-ais"]
     assert client.claims == 2
     assert client.row["status"] == "complete"
+
+
+def test_stale_running_bootstrap_lease_is_reclaimed(monkeypatch):
+    client = StartupSupabase()
+    client.row.update({
+        "status": "running",
+        "started_at": "2020-01-01T00:00:00+00:00",
+        "error": None,
+    })
+    events = []
+    monkeypatch.setattr("src.supabase_client.supabase", client)
+    monkeypatch.setattr(spatial_jobs, "_fetch_missing_zones", lambda: events.append("images"))
+    monkeypatch.setattr(
+        spatial_jobs,
+        "_analyze_latest_zones_with_live_ais",
+        lambda: events.append("scene-matched-ais"),
+    )
+
+    spatial_jobs.run_startup_spatial_bootstrap()
+
+    assert events == ["images", "scene-matched-ais"]
+    assert client.claims == 1
+    assert client.row["status"] == "complete"
+
+
+def test_active_running_bootstrap_lease_is_not_stolen(monkeypatch):
+    client = StartupSupabase()
+    client.row.update({
+        "status": "running",
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "error": "active-owner",
+    })
+    monkeypatch.setattr("src.supabase_client.supabase", client)
+    monkeypatch.setattr(
+        spatial_jobs,
+        "_fetch_missing_zones",
+        lambda: pytest.fail("active lease must not be stolen"),
+    )
+
+    with pytest.raises(RuntimeError, match="lease heartbeat"):
+        spatial_jobs.run_startup_spatial_bootstrap()
+
+    assert client.claims == 0
+    assert client.row["error"] == "active-owner"

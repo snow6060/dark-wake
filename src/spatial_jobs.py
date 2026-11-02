@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import threading
 import uuid
 import logging
@@ -12,6 +12,8 @@ _ACTIVE: dict[str, str] = {}
 _LOCK = threading.Lock()
 _WORK_LOCK = threading.Lock()
 _STARTUP_BOOTSTRAP_KEY = "spatial_image_ais_bootstrap_v2"
+_STARTUP_LEASE_HEARTBEAT_SECONDS = 20
+_STARTUP_LEASE_TIMEOUT = timedelta(minutes=2)
 
 
 class _BatchReporter:
@@ -213,6 +215,31 @@ def _analyze_latest_zones_with_live_ais():
         )
 
 
+def _heartbeat_startup_lease(state_table, lease_token, stop, lost_lease):
+    while not stop.wait(_STARTUP_LEASE_HEARTBEAT_SECONDS):
+        try:
+            updated = (
+                state_table.update({
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                })
+                .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
+                .eq("status", "running")
+                .eq("error", lease_token)
+                .select("startup_key")
+                .execute()
+                .data
+                or []
+            )
+        except Exception:
+            log.exception("Could not renew the one-time spatial bootstrap lease.")
+            lost_lease.set()
+            return
+        if not updated:
+            log.error("Lost ownership of the one-time spatial bootstrap lease.")
+            lost_lease.set()
+            return
+
+
 def run_startup_spatial_bootstrap():
     from src.supabase_client import supabase
 
@@ -221,7 +248,7 @@ def run_startup_spatial_bootstrap():
 
     state_table = supabase.table("spatial_startup_state")
     state = (
-        state_table.select("status")
+        state_table.select("status,started_at,error")
         .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
         .limit(1)
         .execute()
@@ -234,7 +261,7 @@ def run_startup_spatial_bootstrap():
             "status": "pending",
         }).execute()
         state = (
-            state_table.select("status")
+            state_table.select("status,started_at,error")
             .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
             .limit(1)
             .execute()
@@ -243,50 +270,92 @@ def run_startup_spatial_bootstrap():
         )
         if not state:
             raise RuntimeError("Could not initialize the one-time spatial bootstrap state.")
-    status = state[0]["status"]
+    state_row = state[0]
+    status = state_row["status"]
     if status == "complete":
         log.info("One-time spatial bootstrap already completed; skipping.")
         return
-    if status not in {"pending", "failed"}:
+    if status == "running":
+        started_at = state_row.get("started_at")
+        if not started_at:
+            raise RuntimeError(
+                "One-time spatial bootstrap is running without a lease timestamp; "
+                "inspect spatial_startup_state before restarting."
+            )
+        running_since = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        if running_since.tzinfo is None:
+            running_since = running_since.replace(tzinfo=timezone.utc)
+        age = datetime.now(timezone.utc) - running_since.astimezone(timezone.utc)
+        if age <= _STARTUP_LEASE_TIMEOUT:
+            raise RuntimeError(
+                "One-time spatial bootstrap is active "
+                f"(lease heartbeat {age.total_seconds():.0f}s ago); "
+                "inspect spatial_startup_state before restarting."
+            )
+        log.warning(
+            "Reclaiming stale spatial bootstrap lease; last heartbeat was %.0f seconds ago.",
+            age.total_seconds(),
+        )
+    elif status not in {"pending", "failed"}:
         raise RuntimeError(
             f"One-time spatial bootstrap is {status}; inspect spatial_startup_state before restarting."
         )
     if status == "failed":
         log.warning("Resuming the incomplete one-time spatial bootstrap after a prior failure.")
 
-    claim = (
+    lease_token = uuid.uuid4().hex
+    claim_query = (
         state_table.update({
             "status": "running",
             "started_at": datetime.now(timezone.utc).isoformat(),
-            "error": None,
+            "error": lease_token,
         })
         .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
         .eq("status", status)
-        .select("startup_key")
-        .execute()
-        .data
-        or []
     )
+    if status == "running":
+        claim_query = claim_query.eq("started_at", state_row["started_at"])
+        if state_row.get("error") is None:
+            claim_query = claim_query.is_("error", "null")
+        else:
+            claim_query = claim_query.eq("error", state_row["error"])
+    claim = claim_query.select("startup_key").execute().data or []
     if not claim:
         raise RuntimeError(
-            "Another backend instance already claimed the one-time spatial bootstrap."
+            "Another backend instance changed or claimed the one-time spatial bootstrap."
         )
 
+    stop_heartbeat = threading.Event()
+    lost_lease = threading.Event()
+    heartbeat = threading.Thread(
+        target=_heartbeat_startup_lease,
+        args=(state_table, lease_token, stop_heartbeat, lost_lease),
+        name="spatial-bootstrap-heartbeat",
+        daemon=True,
+    )
+    heartbeat.start()
     try:
         with _WORK_LOCK:
             _fetch_missing_zones()
             _analyze_latest_zones_with_live_ais()
+        if lost_lease.is_set():
+            raise RuntimeError("One-time spatial bootstrap lost its database lease.")
     except Exception as exc:
         try:
             state_table.update({
                 "status": "failed",
                 "completed_at": datetime.now(timezone.utc).isoformat(),
                 "error": str(exc)[:2000],
-            }).eq("startup_key", _STARTUP_BOOTSTRAP_KEY).eq("status", "running").execute()
+            }).eq("startup_key", _STARTUP_BOOTSTRAP_KEY).eq("status", "running").eq(
+                "error", lease_token
+            ).execute()
         except Exception:
             log.exception("Could not persist the one-time spatial bootstrap failure state.")
         log.exception("One-time spatial bootstrap failed; backend startup will stop.")
         raise RuntimeError(f"One-time spatial bootstrap failed: {exc}") from exc
+    finally:
+        stop_heartbeat.set()
+        heartbeat.join(timeout=_STARTUP_LEASE_HEARTBEAT_SECONDS + 1)
 
     completed = (
         state_table.update({
@@ -296,6 +365,7 @@ def run_startup_spatial_bootstrap():
         })
         .eq("startup_key", _STARTUP_BOOTSTRAP_KEY)
         .eq("status", "running")
+        .eq("error", lease_token)
         .select("startup_key")
         .execute()
         .data
