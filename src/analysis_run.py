@@ -83,7 +83,22 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam
     pass_time = datetime.fromisoformat(snap["acquired_at"].replace("Z", "+00:00")).astimezone(timezone.utc)
     tr, crs = Affine(*snap["window_transform"]), snap["crs"]
 
-    rep.progress(80, "Loading image")
+    rep.progress(80, "Fetching AIS history")
+    if ais_json:
+        import json
+        ships, credits, ais_window_s = (
+            parse_features(json.load(open(ais_json, encoding="utf-8-sig"))),
+            "replay",
+            None,
+        )
+    else:
+        ships, credits, ais_window_s = fetch_bbox_history(
+            zone.bbox,
+            pass_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+    rep.log(f"{len(ships)} AIS ships in the feed (credits left: {credits})")
+
+    rep.progress(83, "Loading image")
     img = Image.open(image) if image else download_image(snap["image_url"], rep)
     rgb = np.asarray(img.convert("RGB"))
     rep.progress(89, "Detecting vessels in the image")
@@ -98,21 +113,6 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam
                 rep.log(f"pair at ({c.cx:.0f},{c.cy:.0f}): {c.sam}")
     hulls = build_hulls(cands, tr, crs)
     rep.log(f"{len(hulls)} vessels detected in the image")
-
-    rep.progress(93, "Fetching AIS history")
-    if ais_json:
-        import json
-        ships, credits, ais_window_s = (
-            parse_features(json.load(open(ais_json, encoding="utf-8-sig"))),
-            "replay",
-            None,
-        )
-    else:
-        ships, credits, ais_window_s = fetch_bbox_history(
-            zone.bbox,
-            pass_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        )
-    rep.log(f"{len(ships)} AIS ships in the feed (credits left: {credits})")
 
     rep.progress(96, "Comparing AIS with the image")
     res = match(hulls, ships, pass_time, is_cloudy=cloud_checker(rgb, tr, crs))

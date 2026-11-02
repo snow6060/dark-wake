@@ -69,7 +69,7 @@ def test_analysis_requests_ais_at_scene_timestamp_and_persists_vessels(monkeypat
         "image_url": "https://example.test/scene.jpg",
         "cloud_pct": 0,
     })
-    requested = []
+    events = []
     vessels = [{
         "mmsi": 123456789,
         "name": "Example Vessel",
@@ -100,17 +100,20 @@ def test_analysis_requests_ais_at_scene_timestamp_and_persists_vessels(monkeypat
     monkeypatch.setattr(
         analysis_run,
         "fetch_bbox_history",
-        lambda bbox, at_iso: requested.append((bbox, at_iso)) or (vessels, "credits", 86400),
+        lambda bbox, at_iso: events.append(("ais", bbox, at_iso)) or (vessels, "credits", 86400),
     )
     monkeypatch.setattr(analysis_run, "match", lambda *_args, **_kwargs: dict(flags))
     monkeypatch.setattr(
         analysis_run,
         "download_image",
-        lambda *_args: SimpleNamespace(convert=lambda _mode: np.zeros((2, 2, 3), dtype=np.uint8)),
+        lambda *_args: events.append(("image",)) or SimpleNamespace(
+            convert=lambda _mode: np.zeros((2, 2, 3), dtype=np.uint8)
+        ),
     )
 
     analysis_run.analyze_latest("hormuz", sam_enabled=False)
 
-    assert requested == [((56.0, 26.0, 57.0, 27.0), acquired_at)]
+    assert events[0] == ("ais", (56.0, 26.0, 57.0, 27.0), acquired_at)
+    assert events[1] == ("image",)
     assert supabase.saved_analysis["ais_vessels"] == vessels
     assert supabase.saved_analysis["summary"]["ais_window_s"] == 86400

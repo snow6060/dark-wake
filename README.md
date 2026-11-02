@@ -85,6 +85,10 @@ Debates are not scheduled, and their API host is restricted to
 On the first backend startup, `spatial_startup_state.spatial_image_ais_bootstrap_v2`
 is claimed once. Startup fetches images for active zones without one, then
 analyzes each zone against AIS history for that image's acquisition time.
+Existing images are reused, and verified snapshots are skipped. For snapshots
+that still need analysis, scene-matched AIS is fetched before image detection
+and SAM 3.1 processing, so an AIS provider error does not trigger redundant
+satellite-image processing.
 If the provider returns a server error for the requested 24-hour history window,
 the AIS client retries with narrower 6-hour, 1-hour, then 15-minute windows and
 records the successful window in the analysis summary. A successful empty result

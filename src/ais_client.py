@@ -95,9 +95,11 @@ def fetch_bbox_history(bbox, at_iso, window_s=86400, key=None, timeout=60):
             if attempt + 1 < HISTORY_REQUEST_ATTEMPTS:
                 delay = 2 ** attempt
                 log.warning(
-                    "AIS history service returned HTTP %s; retrying in %s seconds "
-                    "(attempt %s/%s).",
+                    "AIS history service returned HTTP %s for %s; response: %s. "
+                    "Retrying in %s seconds (attempt %s/%s).",
                     r.status_code,
+                    getattr(r, "url", f"{BASE}/v1/vessels/bbox/history"),
+                    (getattr(r, "text", "") or "").replace("\r", " ").replace("\n", " ")[:500],
                     delay,
                     attempt + 1,
                     HISTORY_REQUEST_ATTEMPTS,
@@ -108,11 +110,18 @@ def fetch_bbox_history(bbox, at_iso, window_s=86400, key=None, timeout=60):
             if window_index + 1 < len(windows):
                 log.warning(
                     "AIS history service returned HTTP %s for a %s-second window; "
-                    "retrying with a narrower historical window.",
+                    "response: %s. Retrying with a narrower historical window.",
                     r.status_code,
                     current_window,
+                    (getattr(r, "text", "") or "").replace("\r", " ").replace("\n", " ")[:500],
                 )
                 break
+            log.error(
+                "AIS history service returned HTTP %s after retries for %s; response: %s.",
+                r.status_code,
+                getattr(r, "url", f"{BASE}/v1/vessels/bbox/history"),
+                (getattr(r, "text", "") or "").replace("\r", " ").replace("\n", " ")[:500],
+            )
             r.raise_for_status()
 
     raise RuntimeError("AIS history request ended without a response.")
