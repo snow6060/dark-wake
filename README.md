@@ -10,6 +10,11 @@ pinned: false
 
 # Dark Wake
 
+> **Hackathon submission:** The current local-only submission, setup instructions,
+> and hackathon work are on the
+> [`meta-hackathon-upgrade` branch](https://github.com/snow6060/dark-wake/tree/meta-hackathon-upgrade).
+> Use that branch for review; this `main` branch does not contain the submission.
+
 Dark Wake combines oil-market prices, news, chokepoint vessel telemetry, and a multi-agent market analysis War Room. The desktop client is built with Tauri and React; the API is a FastAPI service.
 
 ## Run locally
