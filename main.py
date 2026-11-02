@@ -1,5 +1,5 @@
 import os
-import asyncio
+import threading
 import logging
 from dotenv import load_dotenv
 
@@ -27,6 +27,7 @@ from src.ingestion import (
     sanitize_energy_news,
 )
 from src.scheduler import start_scheduler
+from src.spatial_jobs import run_startup_spatial_bootstrap
 from src.agents import (
     MetaModelQuotaError,
     get_recent_debates,
@@ -39,19 +40,26 @@ log = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     init_db()
-    from src.spatial_jobs import run_startup_spatial_bootstrap
-    try:
-        await asyncio.to_thread(run_startup_spatial_bootstrap)
-    except Exception:
-        log.exception(
-            "Spatial startup bootstrap did not complete; continuing backend startup. "
-            "The bootstrap can resume on a later restart."
-        )
+    threading.Thread(
+        target=_run_startup_spatial_bootstrap,
+        name="spatial-bootstrap-startup",
+        daemon=True,
+    ).start()
     fetch_straits_live_chokepoint_data()
     fetch_straits_live_hormuz_data()
     fetch_and_store_rss_headlines()
     start_scheduler()
     yield
+
+
+def _run_startup_spatial_bootstrap():
+    try:
+        run_startup_spatial_bootstrap()
+    except Exception:
+        log.exception(
+            "Spatial startup bootstrap did not complete; continuing backend startup. "
+            "The bootstrap can resume on a later restart."
+        )
 
 app = FastAPI(
     title="Dark Wake Strategy Desk API",

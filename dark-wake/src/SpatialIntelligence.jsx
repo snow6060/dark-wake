@@ -64,8 +64,10 @@ const css = `
 .sp .hover-line span{color:#94a3b8}
 .sp .hover-line b{color:#f8fafc;font-weight:500}
 .sp .run{margin-top:12px}
-.sp .bar{height:10px;background:#0b1320;border:1px solid #1e3a4c;margin:8px 0}
+.sp .bar{height:10px;background:#0b1320;border:1px solid #1e3a4c;margin:8px 0;position:relative;overflow:hidden}
 .sp .bar>i{display:block;height:100%;background:linear-gradient(90deg,#0ea5e9,#34d399);transition:width .4s}
+.sp .bar.active:after{content:"";position:absolute;inset:0 auto 0 -35%;width:35%;background:linear-gradient(90deg,transparent,#e0f2feaa,transparent);animation:sp-progress-sweep 1.5s ease-in-out infinite}
+@keyframes sp-progress-sweep{to{left:100%}}
 .sp .log{max-height:130px;overflow:auto;font-size:11px;color:#8aa0b3;background:#05080d;border:1px solid #16303f;padding:6px}
 .sp .sweep{transform-origin:320px 320px;animation:spsw 6s linear infinite}
 @keyframes spsw{to{transform:rotate(360deg)}}
@@ -128,7 +130,7 @@ export default function SpatialIntelligence() {
     try {
       const r = await fetch(`${API}/api/spatial/zones?refresh=true`);
       const j = await responseJson(r);
-      const nextZones = j.zones || [];
+      const nextZones = (j.zones || []).filter((item) => item.zone_id !== "hormuz");
       const nextIds = nextZones.map((item) => item.zone_id);
       setZones(nextZones);
       setSelectedZones((current) => current === null ? nextIds : current.filter((id) => nextIds.includes(id)));
@@ -164,7 +166,7 @@ export default function SpatialIntelligence() {
     clearInterval(timer.current);
     let next = 0;
     let polling = false;
-    timer.current = setInterval(async () => {
+    const poll = async () => {
       if (polling) return;
       polling = true;
       try {
@@ -191,15 +193,27 @@ export default function SpatialIntelligence() {
       } finally {
         polling = false;
       }
-    }, 1200);
+    };
+    timer.current = setInterval(poll, 1200);
+    void poll();
   };
 
-  const run = async (requestedZoneIds = selectedZones || zones.map((item) => item.zone_id)) => {
-    const zoneIds = requestedZoneIds;
+  const run = async (requestedZoneIds) => {
+    const zoneIds = Array.isArray(requestedZoneIds)
+      ? requestedZoneIds
+      : selectedZones || zones.map((item) => item.zone_id);
     if (!zoneIds.length) return;
     try {
       setErr(null);
-      setJob(null);
+      setJob({
+        id: null,
+        pct: 0,
+        stage: `Submitting ${zoneIds.length} zone(s)…`,
+        lines: [],
+        done: false,
+        error: null,
+        next: 0,
+      });
       const response = await fetch(`${API}/api/spatial/zones/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -210,6 +224,7 @@ export default function SpatialIntelligence() {
       setZoneDialog(false);
       followJob(jobId, zoneIds);
     } catch (e) {
+      setJob((current) => ({ ...current, done: true, error: e.message }));
       setErr("Could not start analysis: " + e.message);
     }
   };
@@ -371,6 +386,24 @@ export default function SpatialIntelligence() {
       <div className="sub">
         Sentinel-2 optical · AIS history matched to scene timestamp · SAM 3.1 enabled for requested analyses
       </div>
+      {job && (
+        <div className="box run" aria-live="polite">
+          <div
+            className={`bar${running ? " active" : ""}`}
+            role="progressbar"
+            aria-label="Fetch and analyze progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={job.pct}
+          >
+            <i style={{ width: `${job.pct}%` }} />
+          </div>
+          <div style={{ fontSize: 11 }}>
+            {job.pct}% · {job.error ? `ERROR: ${job.error}` : job.stage}
+          </div>
+          <div className="log">{(job.lines || []).map((line, index) => <div key={index}>{line}</div>)}</div>
+        </div>
+      )}
       <div className="zone-grid">
         {zones.map((item) => {
           const summary = item.summary;
@@ -644,13 +677,6 @@ export default function SpatialIntelligence() {
           </section>
         </>
       )}
-      {job && (
-        <div className="box run" aria-live="polite">
-          <div className="bar"><i style={{ width: `${job.pct}%` }} /></div>
-          <div style={{ fontSize: 11 }}>{job.pct}% · {job.error ? "ERROR: " + job.error : job.stage}</div>
-          <div className="log">{job.lines.map((line, index) => <div key={index}>{line}</div>)}</div>
-        </div>
-      )}
       {zoneDialog && (
         <div className="dialog-backdrop" onMouseDown={(event) => {
           if (event.target === event.currentTarget) setZoneDialog(false);
@@ -658,6 +684,14 @@ export default function SpatialIntelligence() {
           <section className="dialog" role="dialog" aria-modal="true" aria-labelledby="zone-run-title">
             <h3 id="zone-run-title">Fetch and analyze zones</h3>
             <div className="note">Choose the satellite zones to refresh. AIS history will be requested at each new capture’s timestamp.</div>
+            {job?.id === null && !job.done && (
+              <div className="box run" aria-live="polite">
+                <div className="bar active" role="progressbar" aria-label="Starting analysis" aria-valuemin={0} aria-valuemax={100} aria-valuenow={0}>
+                  <i style={{ width: "0%" }} />
+                </div>
+                <div style={{ fontSize: 11 }}>{job.stage}</div>
+              </div>
+            )}
             <div className="dialog-actions">
               <button type="button" onClick={selectAllZones}>Select all</button>
               <button type="button" onClick={clearZones}>Clear</button>

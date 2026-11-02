@@ -1,246 +1,97 @@
----
-title: Dark Wake API
-emoji: "🛢️"
-colorFrom: blue
-colorTo: indigo
-sdk: docker
-app_port: 7860
-pinned: false
----
-
 # Dark Wake
 
-Dark Wake combines energy-market prices, commercial news, maritime-route telemetry, and a multi-agent Strategy Desk. The desktop client is built with Tauri and React; the API is a FastAPI service.
+Dark Wake is a locally run maritime and energy intelligence app. It combines a
+React dashboard with a FastAPI backend for market data, news, satellite imagery,
+vessel detection, and AIS history.
 
-## Run locally
+The supported setup runs the frontend and backend on your own computer. This
+repository does not include Docker deployment or hosted release workflows.
+Hackathon development and its full commit history are preserved on the
+[`meta-hackathon-upgrade` branch](https://github.com/snow6060/dark-wake/tree/meta-hackathon-upgrade).
 
-### Backend
+## Requirements
 
-1. Install Python 3.11 or newer.
-2. From the repository root, create and activate a virtual environment:
+- Windows 10/11 with PowerShell
+- Python 3.12
+- Node.js 22 LTS (npm is included)
+- A Supabase project and provider credentials for the features you want to use
 
-   ```powershell
-   py -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   ```
+## Configure the backend
 
-3. Install the backend dependencies and make your local environment file:
-
-   ```powershell
-   pip install -r requirements.txt
-   Copy-Item .env.example .env
-   ```
-
-4. Open the root `.env` file and set the API keys:
-
-   ```dotenv
-   META_MODEL_API_KEY=your_meta_model_api_key
-   META_MODEL_NAME=meta-models/muse-spark-open-1026
-   META_MODEL_API_BASE_URL=https://api.meta.ai/v1
-   SUPABASE_URL=https://your-project.supabase.co
-   SUPABASE_KEY=your_supabase_service_role_key
-   ```
-
-   The Strategy Desk uses the Meta Model API. Supabase credentials are used for saved analyses, RSS news, and forecast-accuracy memory. Before enabling memory, execute [`sql/strategy_desk_memory.sql`](./sql/strategy_desk_memory.sql) in the Supabase SQL editor. Existing analysis history remains in the `war_room_debates` table. Keep `.env` private; it is ignored by Git.
-
-5. Start the API from the repository root:
-
-   ```powershell
-   uvicorn main:app --reload
-   ```
-
-   The API is available at `http://localhost:8000`; interactive API docs are at `/docs`.
-
-### Desktop app
-
-Install Node.js and Rust. On Windows, also install Visual Studio 2022 or
-Visual Studio Build Tools 2022 with the **Desktop development with C++**
-workload, including the MSVC C++ build tools and a Windows SDK. Rust's
-`*-pc-windows-msvc` target needs the MSVC linker (`link.exe`); VS Code alone
-does not provide it.
-
-After installation, open a new terminal (or use **Developer PowerShell for
-Visual Studio 2022**) so the compiler environment is available. If Cargo still
-reports that `link.exe` is missing, verify it in that terminal with:
+Open a terminal at the repository root and create a virtual environment:
 
 ```powershell
-where.exe link
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+if (-not (Test-Path .env)) { Copy-Item .env.example .env }
 ```
 
-Then, from `dark-wake`:
+Edit `.env` in the repository root. Add the credentials for the integrations
+you plan to use:
+
+| Variable | Used for |
+| --- | --- |
+| `SUPABASE_URL`, `SUPABASE_KEY` | Spatial zones, saved satellite captures, and analysis data. Keep the service-role key on the backend only. |
+| `VOYAGE_RADAR_API_KEY` | Historical AIS vessel data used by spatial analysis. |
+| `META_MODEL_API_KEY` | Strategy Desk debates. |
+| `HF_TOKEN` | Downloading the SAM model when SAM analysis is enabled. |
+
+`AIS_API_BASE` and the model settings have defaults in `.env.example`. The
+dashboard connects to `http://localhost:8000` by default; set
+`VITE_API_BASE_URL` in `dark-wake/.env.local` only if you need a different
+local backend address.
+
+For spatial analysis, provision the `spatial_zones`, `spatial_snapshots`,
+`spatial_analysis`, and `spatial_startup_state` tables, populate the active
+zones, and configure the Supabase Storage bucket.
+[`spatial_analysis.sql`](./sql/spatial_analysis.sql) creates or updates the
+analysis table; the other tables and bucket must also be set up in your
+Supabase project.
+Never put backend credentials in frontend environment variables or commit a
+real `.env` file.
+
+## Start the app
+
+### 1. Start the backend
+
+In the activated virtual environment, from the repository root:
 
 ```powershell
-npm install
-npm run tauri dev
+uvicorn main:app --reload
 ```
 
-For browser-only frontend development, use `npm run dev`. By default, the client connects to the local API at `http://localhost:8000`.
+The API runs at <http://localhost:8000>; its interactive documentation is at
+<http://localhost:8000/docs>.
 
-#### Strategy Desk and startup data
+### 2. Start the frontend
 
-The Strategy Desk only calls the Meta AI API when **Run Debate** is pressed.
-Debates are not scheduled, and their API host is restricted to
-`https://api.meta.ai/v1`.
-
-On the first backend startup, `spatial_startup_state.spatial_image_ais_bootstrap_v2`
-is claimed once. Startup fetches images for active zones without one, then
-analyzes each zone against AIS history for that image's acquisition time.
-Existing images are reused, and verified snapshots are skipped. For snapshots
-that still need analysis, scene-matched AIS is fetched before image detection
-and SAM 3.1 processing, so an AIS provider error does not trigger redundant
-satellite-image processing.
-If the provider returns a server error for the requested 24-hour history window,
-the AIS client retries with narrower 6-hour, 1-hour, then 15-minute windows and
-records the successful window in the analysis summary. The provider's specific
-“failed to query vessels in bounding box at the requested time” error skips
-retries for that window and moves directly to the next narrower window. A
-successful empty result is kept as empty; it is never replaced with current/live
-AIS positions.
-RSS and telemetry ingestion and the periodic scheduler start after the bootstrap
-attempt. A bootstrap failure is logged and recorded as `failed` but does not
-prevent the API from starting; a later backend restart resumes it, skipping
-zones whose latest snapshot is already verified. Failed/incomplete zones remain
-unavailable for scene-matched analysis until AIS retrieval succeeds. Successful
-completion is recorded once and skipped on future startups. AIS history
-requests retry transient connection and server errors up to three times with
-backoff.
-The running state is renewed every 20 seconds; a later startup can reclaim the
-lease if its last heartbeat is over two minutes old, while a fresh lease blocks
-concurrent startup work.
-
-## Build and sign the Windows installer with SignPath
-
-Dark Wake is applying to use the SignPath Foundation for code signing its
-open-source Windows releases. Once the project is approved and signing is
-enabled, signed releases will identify SignPath Foundation as the certificate
-provider. Until then, published installers may be unsigned.
-
-The `.github/workflows/windows-signpath.yml` workflow builds the NSIS installer
-on a GitHub-hosted Windows runner, uploads the unsigned installer to GitHub
-Actions, submits that artifact to SignPath, verifies the returned Authenticode
-signature, and uploads the signed installer. When started by pushing a `v*`
-tag, it also publishes the signed installer as a GitHub Release asset. A
-manual `workflow_dispatch` run builds and signs the selected branch or tag and
-retains the signed installer as a downloadable workflow artifact.
-
-### SignPath setup
-
-This workflow does not create a SignPath account, project, certificate, or
-signing policy. Apply to the SignPath Foundation and complete its project
-configuration first. The Foundation must approve the project and signing
-requests; signing and SmartScreen reputation are not guaranteed.
-
-The repository is licensed under the MIT License; see `LICENSE`. The
-Foundation must still approve the project before this workflow can submit
-signing requests.
-
-After SignPath provides the organization, project, signing-policy, and
-artifact-configuration values, configure the repository at **Settings →
-Secrets and variables → Actions**:
-
-- Add the SignPath API token as the `SIGNPATH_API_TOKEN` Actions secret.
-- Add `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, and
-  `SIGNPATH_SIGNING_POLICY_SLUG` as Actions variables.
-- Add `SIGNPATH_ARTIFACT_CONFIGURATION_SLUG` as an Actions variable if the
-  SignPath project requires a non-default artifact configuration.
-- Configure the artifact configuration to accept the single unsigned
-  `dark-wake_<version>_x64-setup.exe` file uploaded by the workflow, and set
-  the signing policy to the certificate and approval process assigned to the
-  project.
-
-Do not commit the API token. The workflow requires `actions: read` to let
-SignPath verify and retrieve the GitHub Actions artifact, and `contents: write`
-to publish a tagged release.
-
-### Run the signing workflow
-
-After merging the workflow and completing SignPath setup, run **Build and sign
-Windows installer** from the repository's Actions tab using **Run workflow**
-and select `main`. The signed installer will be available as a downloadable
-workflow artifact. The existing `v0.2.1` tag predates this workflow, so upload
-that artifact manually to the existing GitHub Release if you are signing that
-version.
-
-For a future release, first update all app version metadata and merge it to
-`main`, then push a matching version tag. For example, after updating the app
-version to `0.2.2`:
+Open a second terminal:
 
 ```powershell
-git tag v0.2.2
-git push origin v0.2.2
+Set-Location .\dark-wake
+npm ci
+npm run dev
 ```
 
-The tag-triggered run builds and signs that version, then publishes the signed
-installer as a GitHub Release asset. The tag must match the app version.
+Open the local URL printed by Vite, usually <http://localhost:5173>.
 
-The installer uses Tauri's offline WebView2 installer mode. This embeds the
-WebView2 runtime and makes the installer roughly 127 MB larger, but allows
-installation without downloading the runtime separately. The workflow does
-not replace Tauri's NSIS installer scripts or change NSIS silent-install
-behavior (the setup executable's `/S` switch remains available).
+The optional Tauri desktop shell can also be run locally. Install Rust and the
+platform's native build tools, then run `npm run tauri dev` from `dark-wake`.
 
-## Deploy the backend to Hugging Face Spaces
+## Notes
 
-The repository includes a Dockerfile and Hugging Face Docker Space metadata. Create a **Docker Space**. To deploy this repository while keeping its Hugging Face Git history:
+- The first spatial run may take longer while satellite imagery and model
+  weights download. The app displays job progress while it fetches imagery,
+  retrieves timestamp-matched AIS history, and analyzes the selected zones.
+- The Strait of Hormuz zone is hidden from the selectable dashboard list; the
+  other four preset zones remain available.
+- The frontend can be production-built locally with `npm run build` from
+  `dark-wake`.
+- This project calls external data and model providers when their features are
+  used; running the app locally does not make those services run offline.
 
-1. Clone the new Space repository in a separate folder:
+## License
 
-   ```powershell
-   git clone https://huggingface.co/spaces/<your-username>/<your-space-name> ..\dark-wake-space
-   ```
-
-2. Copy `README.md`, `Dockerfile`, `.dockerignore`, `main.py`, `requirements.txt`, and `src/` from this repository into that cloned Space folder. Do not copy `.env`, virtual environments, or local database files.
-3. From the cloned folder, commit and push the copied files:
-
-   ```powershell
-   git add README.md Dockerfile .dockerignore main.py requirements.txt src
-   git commit -m "Deploy Dark Wake API"
-   git push
-   ```
-
-   Authenticate with a Hugging Face token that has write access when Git prompts. The container listens on port `7860`; Hugging Face provides the public HTTPS URL for the running Space.
-
-In the Space's **Settings → Variables and secrets**, add:
-
-- `META_MODEL_API_KEY` as a secret.
-- `META_MODEL_NAME` as a variable.
-- `SUPABASE_KEY` as a secret.
-- `SUPABASE_URL` as a variable.
-
-Do not upload `.env` or put secrets in the Dockerfile. The Space gets these values as runtime environment variables. The API uses SQLite at `/data/oil_intelligence.db` in the container. Space disk contents are not durable across restarts unless persistent storage is configured; use Supabase for Strategy Desk history, forecast memory, and RSS data.
-
-When the Space is running, check `https://<your-space-url>/health` and `https://<your-space-url>/docs`. Copy the HTTPS base URL shown for your Space; do not include `/api` at the end.
-
-> **Availability note:** Hugging Face's current documentation says Docker Spaces require an eligible paid plan to create, even though CPU Basic hardware has no hourly usage charge. Free hardware may sleep after inactivity. While asleep, scheduled ingestion and Strategy Desk jobs do not run, and the first request after sleep may be slow. Check current plan and storage terms in your account; persistent storage and uninterrupted scheduling may require a paid configuration.
-
-## Build the Windows desktop app for the hosted API
-
-The production frontend is configured to use the Render backend URL in `dark-wake/.env.production`. From the repository root, build the Windows installer:
-
-```powershell
-npm --prefix dark-wake run tauri -- build --bundles nsis
-```
-
-Tauri writes the Windows installer under `dark-wake/src-tauri/target/release/bundle/nsis/`. Update `.env.production` and rebuild whenever the backend URL changes. Never put Meta Model API or Supabase secret keys in the desktop build.
-
-The installer bundles the offline WebView2 runtime and is therefore much larger
-than the small bootstrapper-based installer. The NSIS `/S` silent-install
-switch remains supported.
-
-## Pending Launch Toggles / Pre-Submission Checklist
-
-- [x] Strategy Desk calls the Meta AI API only from the manual **Run Debate** action.
-- [x] Wire Spatial Intelligence V2 to the Sentinel-2/AIS backend; local frontend production build succeeds.
-- [ ] Validate browser interactions and persist an analysis after the Supabase `spatial_analysis` table is present.
-- [ ] Remove the legacy mock tab and placeholder imagery after V2 is verified; SAM 3.1 video tracking is not implemented.
-
----
-
-## Data sources
-
-- Straits.live provides recent Hormuz vessel counts.
-- TankerMap public pages provide daily chokepoint transits, recent Bab el-Mandeb observations, and news headlines.
-- IMF PortWatch provides historical vessel and oil-flow estimates.
-- The Strategy Desk uses the Meta Model API and stores its analyses in Supabase.
-
-The Strategy Desk runs only when **Run Debate** is pressed; it has no scheduled debate job.
+See [LICENSE](./LICENSE).

@@ -1,38 +1,30 @@
+# Python environments and generated files
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+.venv/
 venv/
 env/
-data/
-*.db
-logs/
-.DS_Store
-app_description.md# private notes and scratch
-_private/
-notes/
-*.private.md
-*.local.md
-NOTES.md
-TODO_PRIVATE.md
-scratch/# secrets and environment files
+
+# Local configuration and secrets
 .env
 .env.*
 !.env.example
-!dark-wake/.env.production
 *.pem
 *.key
 service-account*.json
-secrets/# local databases and data
+secrets/
+
+# Local data, caches, and model weights
 *.db
 *.sqlite
-oil_intelligence.db
 data/
+logs/
 satellite_cache/
 *.tif
 *.tiff
 *.jp2
 *.npy
-*.npz# model weights, caches and worker output
+*.npz
 *.pt
 *.pth
 *.safetensors
@@ -42,15 +34,23 @@ checkpoints/
 huggingface/
 worker_out/
 worker_logs/
-*.log# notebook outputs
-.ipynb_checkpoints/
-*.ipynb_output# python and node build artifacts (add only if not already present)
-__pycache__/
-.venv/
-venv/
+*.log
+
+# Frontend and desktop build output
 node_modules/
 dark-wake/dist/
 dark-wake/src-tauri/target/
+
+# Private notes and local tooling
+.DS_Store
+app_description.md
+_private/
+notes/
+*.private.md
+*.local.md
+NOTES.md
+TODO_PRIVATE.md
+scratch/
 CLAUDE.md
 claude_chat/
 sam3/
