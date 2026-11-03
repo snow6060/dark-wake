@@ -43,11 +43,14 @@ from typing import Any
 
 import numpy as np
 import rasterio
+from affine import Affine
 from PIL import Image
+from rasterio.enums import Resampling
 from pystac_client import Client
 from rasterio.transform import from_origin
-from rasterio.warp import transform_bounds
+from rasterio.warp import reproject, transform_bounds
 from rasterio.windows import Window, bounds as window_bounds, from_bounds
+from scipy import ndimage as ndi
 
 from src.spatial_config import SpatialSettings, Zone, load_active_zones, load_settings
 from src.supabase_client import supabase
@@ -283,6 +286,104 @@ def read_visual_mosaic(items: list, bounds: tuple[float, float, float, float], c
     return canvas, from_origin(left, top, 10, 10), crs
 
 
+def build_water_mask(
+    scl: np.ndarray,
+    scl_bounds: tuple[float, float, float, float],
+    scl_crs: str,
+    image_shape: tuple[int, int],
+    image_transform: Affine,
+    image_crs: str,
+) -> np.ndarray:
+    """Reproject Sentinel-2's 20 m water class to the image grid, excluding uncertain shore pixels."""
+    left, _, _, top = scl_bounds
+    water_20m = (scl == 6).astype(np.uint8)
+    water = np.zeros(image_shape, dtype=np.uint8)
+    reproject(
+        source=water_20m,
+        destination=water,
+        src_transform=from_origin(left, top, 20, 20),
+        src_crs=scl_crs,
+        dst_transform=image_transform,
+        dst_crs=image_crs,
+        resampling=Resampling.nearest,
+    )
+    return ndi.binary_erosion(water.astype(bool), iterations=2)
+
+
+def encode_water_mask(mask: np.ndarray) -> bytes:
+    buffer = io.BytesIO()
+    Image.fromarray(mask.astype(np.uint8) * 255).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def _water_mask_path(snapshot: dict[str, Any], zone_id: str) -> str:
+    image_path = snapshot.get("image_path")
+    if image_path:
+        image_path = str(image_path)
+        for extension in (".jpeg", ".jpg"):
+            if image_path.lower().endswith(extension):
+                return image_path[:-len(extension)] + "_water.png"
+    return f"{zone_id}/{snapshot['scene_id']}_water.png"
+
+
+def load_water_mask(
+    zone: Zone,
+    snapshot: dict[str, Any],
+    image_shape: tuple[int, int],
+    image_transform: Affine,
+    image_crs: str,
+    reporter: Reporter | None = None,
+) -> np.ndarray:
+    """Load a saved mask or create one from the exact Sentinel pass for an older capture."""
+    settings = load_settings()
+    storage = _require_supabase().storage.from_(settings.bucket)
+    mask_path = _water_mask_path(snapshot, zone.zone_id)
+    stored_error = None
+    try:
+        data = storage.download(mask_path)
+        mask = np.asarray(Image.open(io.BytesIO(data)).convert("L")) > 0
+        if mask.shape == image_shape:
+            return mask
+        stored_error = ValueError(
+            f"stored mask dimensions {mask.shape} do not match image dimensions {image_shape}"
+        )
+    except Exception as exc:
+        stored_error = exc
+    message = (
+        f"Water mask unavailable for {snapshot['scene_id']} ({stored_error}); "
+        "rebuilding from Sentinel classification."
+    )
+    log.warning(message)
+    if reporter:
+        reporter.log(message)
+
+    acquired_at = datetime.fromisoformat(snapshot["acquired_at"].replace("Z", "+00:00"))
+    items = search_scenes(
+        Client.open(settings.stac_url),
+        zone,
+        acquired_at - timedelta(minutes=15),
+        acquired_at + timedelta(minutes=15),
+        settings,
+    )
+    for group in group_scenes_by_pass(items):
+        if pass_scene_id(group, zone.zone_id) != snapshot["scene_id"]:
+            continue
+        info = read_scl_mosaic(group, zone.bbox)
+        if info is None:
+            break
+        mask = build_water_mask(
+            info["scl"], info["bounds"], info["crs"],
+            image_shape, image_transform, image_crs,
+        )
+        storage.upload(mask_path, encode_water_mask(mask), {"content-type": "image/png", "upsert": "true"})
+        return mask
+
+    raise RuntimeError(
+        f"Could not restore Sentinel water mask for '{snapshot['scene_id']}'. "
+        f"Stored mask error: {stored_error}"
+    ) from stored_error
+
+
 def render_jpeg(rgb: np.ndarray, max_side: int | None = None, stretch: bool = True, quality: int = 90) -> bytes:
     """Encode (3, h, w) uint8 as JPEG. Full resolution unless max_side is given (thumbnails).
 
@@ -357,9 +458,9 @@ def known_snapshots(zone_id: str) -> list[dict[str, Any]]:
     return [r for r in rows if r["acquired_at"] is not None]
 
 
-def upload_image(bucket: str, path: str, data: bytes) -> str:
+def upload_image(bucket: str, path: str, data: bytes, content_type: str = "image/jpeg") -> str:
     storage = _require_supabase().storage.from_(bucket)
-    storage.upload(path, data, {"content-type": "image/jpeg", "upsert": "true"})
+    storage.upload(path, data, {"content-type": content_type, "upsert": "true"})
     return storage.get_public_url(path)
 
 
@@ -396,7 +497,12 @@ def prune_zone(zone_id: str, keep_n: int, bucket: str) -> int:
     stale = rows[keep_n:]
     if not stale:
         return 0
-    files = [p for r in stale for p in (r.get("image_path"), r.get("thumb_path")) if p]
+    files = [
+        p
+        for r in stale
+        for p in (r.get("image_path"), r.get("thumb_path"), _water_mask_path(r, zone_id))
+        if p
+    ]
     client = _require_supabase()
     if files:
         client.storage.from_(bucket).remove(files)
@@ -473,6 +579,7 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
             best_by_day[day] = {
                 "group": group, "scene_id": scene_id, "when": when, "items": info["items"],
                 "valid_pct": valid_pct, "cloud_pct": cloud_pct, "bounds": info["bounds"], "crs": info["crs"],
+                "scl": info["scl"],
             }
 
     candidates = sorted(best_by_day.values(), key=lambda c: c["when"], reverse=True)
@@ -508,21 +615,29 @@ def process_zone(zone: Zone, settings: SpatialSettings, stac_client, dry_run: bo
         full = render_jpeg(rgb)
         thumb = render_jpeg(rgb, max_side=640)
         paths = {"image": f"{zone.zone_id}/{cand['scene_id']}.jpg",
-                 "thumb": f"{zone.zone_id}/{cand['scene_id']}_thumb.jpg"}
+                 "thumb": f"{zone.zone_id}/{cand['scene_id']}_thumb.jpg",
+                 "water": f"{zone.zone_id}/{cand['scene_id']}_water.png"}
+        water = build_water_mask(
+            cand["scl"], cand["bounds"], cand["crs"],
+            (height, width), transform, crs,
+        )
+        water_png = encode_water_mask(water)
         if local_dir:
             out = Path(local_dir) / zone.zone_id
             out.mkdir(parents=True, exist_ok=True)
             (out / f"{cand['scene_id']}.jpg").write_bytes(full)
             (out / f"{cand['scene_id']}_thumb.jpg").write_bytes(thumb)
+            (out / f"{cand['scene_id']}_water.png").write_bytes(water_png)
         if not dry_run:
             rep.progress(lo + span, "Uploading to storage")
             image_url = upload_image(bucket, paths["image"], full)
             upload_image(bucket, paths["thumb"], thumb)
+            upload_image(bucket, paths["water"], water_png, "image/png")
             insert_snapshot_row(zone, cand, paths, image_url, (width, height), crs, transform)
             result["stored"].append({"scene": cand["scene_id"], "size_px": [width, height],
-                                     "image_path": paths["image"]})
+                                     "image_path": paths["image"], "water_mask_path": paths["water"]})
             rep.log(f"stored {cand['scene_id']} ({width}x{height}, cloud {cand['cloud_pct']}%)")
-        del rgb, full, thumb
+        del rgb, full, thumb, water, water_png
 
     if not dry_run:
         result["pruned"] = prune_zone(zone.zone_id, settings.keep_per_zone, bucket)

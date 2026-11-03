@@ -15,6 +15,7 @@ from src import vessel_census as vc
 from src.ais_client import fetch_bbox_history, parse_features
 from src.ais_match import match
 from src.job_reporter import Reporter
+from src.satellite_fetch import load_water_mask
 from src.spatial_config import load_active_zones
 from src.supabase_client import supabase
 
@@ -83,7 +84,13 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam
     pass_time = datetime.fromisoformat(snap["acquired_at"].replace("Z", "+00:00")).astimezone(timezone.utc)
     tr, crs = Affine(*snap["window_transform"]), snap["crs"]
 
-    rep.progress(80, "Fetching AIS history")
+    rep.progress(80, "Loading image")
+    img = Image.open(image) if image else download_image(snap["image_url"], rep, lo=80, hi=84)
+    rgb = np.asarray(img.convert("RGB"))
+    rep.progress(85, "Loading Sentinel water classification")
+    water = load_water_mask(zone, snap, rgb.shape[:2], tr, crs, rep)
+
+    rep.progress(87, "Fetching AIS history")
     if ais_json:
         import json
         ships, credits, ais_window_s = (
@@ -98,11 +105,8 @@ def analyze_latest(zone_id, rep=None, ais_json=None, image=None, write=True, sam
         )
     rep.log(f"{len(ships)} AIS ships in the feed (credits left: {credits})")
 
-    rep.progress(83, "Loading image")
-    img = Image.open(image) if image else download_image(snap["image_url"], rep)
-    rgb = np.asarray(img.convert("RGB"))
     rep.progress(89, "Detecting vessels in the image")
-    cands = vc.propose_candidates(rgb)
+    cands = vc.propose_candidates(rgb, scl_water_mask=water)
     if sam_enabled:
         from src.sam_refine import refine_candidates
         from src.sam_runtime import segment_exemplars

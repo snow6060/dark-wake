@@ -46,9 +46,17 @@ const getNicePriceInterval = value => {
 function DeskSignalPanel({ analysis, marketData, loading, error }) {
   const verdict = analysis?.verdict;
   const signal = String(verdict?.signal || 'HOLD').toLowerCase();
-  const marketPriceLabel = marketData?.price_basis === 'intraday'
+  const analysisMarketData = analysis?.market_context;
+  const displayedMarketData = marketData?.price != null
+    ? marketData
+    : analysisMarketData?.price != null
+      ? analysisMarketData
+      : marketData;
+  const marketPriceLabel = displayedMarketData?.price_basis === 'cached_close'
+    ? 'SAVED CLOSE · STALE'
+    : displayedMarketData?.price_basis === 'intraday'
     ? 'LIVE SNAPSHOT'
-    : marketData?.price_basis === 'last_close'
+    : displayedMarketData?.price_basis === 'last_close'
       ? 'LAST CLOSE'
       : 'QUOTE UNAVAILABLE';
   const analysisDate = analysis?.created_at ? new Date(analysis.created_at) : null;
@@ -71,9 +79,14 @@ function DeskSignalPanel({ analysis, marketData, loading, error }) {
             <span className="signal-confidence">{verdict.conviction ?? '—'}% conviction</span>
           </div>
           <div className="verdict-price">
-            <div><span>BRENT / BZ=F</span><strong>{formatCurrency(marketData?.price)}</strong></div>
+            <div><span>BRENT / BZ=F</span><strong>{formatCurrency(displayedMarketData?.price)}</strong></div>
             <span>{marketPriceLabel}</span>
           </div>
+          {displayedMarketData?.price_basis === 'cached_close' && (
+            <p className="market-closed-note">
+              Yahoo quote unavailable · saved price from {displayedMarketData.price_as_of || 'an earlier analysis'}; not live
+            </p>
+          )}
           {marketData?.market_is_closed && (
             <p className="market-closed-note">
               Market closed · using the latest close
@@ -421,7 +434,21 @@ export default function App() {
     setDebateRunning(true);
     setDebateRunError('');
     try {
-      const response = await fetch(`${API_BASE_URL}/api/strategy-desk/run`, { method: 'POST' });
+      const quote = Number.isFinite(Number(brentData.price)) && Number(brentData.price) > 0
+        ? {
+            price: Number(brentData.price),
+            change_pct: brentData.change_pct,
+            market_status: brentData.market_status,
+            market_is_closed: brentData.market_is_closed,
+            price_basis: brentData.price_basis,
+            price_as_of: brentData.price_as_of,
+          }
+        : {};
+      const response = await fetch(`${API_BASE_URL}/api/strategy-desk/run`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(quote),
+      });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || 'Could not run the Strategy Desk debate.');
       if (!result?.id) throw new Error('The Strategy Desk did not return a saved analysis.');

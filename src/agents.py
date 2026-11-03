@@ -1,4 +1,6 @@
 import json
+import logging
+import math
 import os
 import re
 import time
@@ -39,6 +41,7 @@ class DebateState(TypedDict, total=False):
 
 
 MAX_AGENT_OUTPUT_TOKENS = 2000
+MAX_RETRY_OUTPUT_TOKENS = 8192
 MAX_MODEL_ATTEMPTS = 3
 MODEL_RETRY_DELAY_SECONDS = 3
 META_API_TIMEOUT_SECONDS = 60
@@ -53,11 +56,11 @@ AGENT_CONTENT_POLICY = (
 META_MODEL_API_URL = "https://api.meta.ai/v1"
 
 
-def run_debate_if_due():
+def run_debate_if_due(market_snapshot: dict[str, Any] | None = None):
     if not _daily_debate_lock.acquire(blocking=False):
         raise RuntimeError("A Strategy Desk debate is already running.")
     try:
-        return run_agent_pipeline()
+        return run_agent_pipeline(market_snapshot)
     finally:
         _daily_debate_lock.release()
 
@@ -139,6 +142,14 @@ class MetaModelQuotaError(RuntimeError):
     """Raised when Meta Model API rejects a request for quota or rate-limit reasons."""
 
 
+class MetaModelEmptyResponseError(RuntimeError):
+    """Raised when the API accepts a request but returns no usable text."""
+
+    def __init__(self, detail: str, reason: str | None = None):
+        self.reason = reason
+        super().__init__(detail)
+
+
 _daily_debate_lock = Lock()
 
 
@@ -211,18 +222,52 @@ def _meta_model_interaction(
         raise MetaModelAPIError(response.status_code, re.sub(r"\s+", " ", detail)[:350])
 
     output_text = payload.get("output_text") if isinstance(payload, dict) else None
-    if not output_text and isinstance(payload, dict):
+    output_types = []
+    refusals = []
+    if not isinstance(output_text, str) or not output_text.strip():
         output_parts = []
-        for item in payload.get("output", []):
-            if item.get("type") == "message":
-                output_parts.extend(
-                    content.get("text", "")
-                    for content in item.get("content", [])
-                    if content.get("type") == "output_text"
-                )
+        output_items = payload.get("output", []) if isinstance(payload, dict) else []
+        if isinstance(output_items, list):
+            for item in output_items:
+                if not isinstance(item, dict):
+                    continue
+                output_types.append(str(item.get("type", "unknown")))
+                content_items = item.get("content", [])
+                if not isinstance(content_items, list):
+                    continue
+                for content in content_items:
+                    if not isinstance(content, dict):
+                        continue
+                    content_type = content.get("type")
+                    text = content.get("text")
+                    if isinstance(text, str) and text.strip():
+                        if content_type == "refusal":
+                            refusals.append(text.strip())
+                        else:
+                            output_parts.append(text)
         output_text = "".join(output_parts)
     if not isinstance(output_text, str) or not output_text.strip():
-        raise RuntimeError("Meta Model API returned a response without output text.")
+        details = []
+        if isinstance(payload, dict):
+            if payload.get("status"):
+                details.append(f"status={payload['status']}")
+            incomplete = payload.get("incomplete_details")
+            if isinstance(incomplete, dict) and incomplete.get("reason"):
+                details.append(f"reason={incomplete['reason']}")
+            if payload.get("id"):
+                details.append(f"response_id={payload['id']}")
+        if refusals:
+            refusal = re.sub(r"\s+", " ", refusals[0])[:200]
+            details.append(f"refusal={refusal}")
+        elif output_types:
+            details.append(f"output_types={','.join(output_types[:6])}")
+        detail = f" ({'; '.join(details)})" if details else ""
+        incomplete = payload.get("incomplete_details") if isinstance(payload, dict) else None
+        reason = incomplete.get("reason") if isinstance(incomplete, dict) else None
+        raise MetaModelEmptyResponseError(
+            f"Meta Model API returned HTTP {response.status_code} without usable output text{detail}.",
+            reason=reason,
+        )
     return output_text.strip()
 
 
@@ -241,19 +286,38 @@ def _invoke(
     models = _model_candidates(model)
     for model_index, candidate in enumerate(models):
         model_not_found = False
+        empty_response = False
+        attempt_max_tokens = max_tokens
         for attempt in range(MAX_MODEL_ATTEMPTS):
             try:
                 response = _meta_model_interaction(
                     f"{system}\n\n{AGENT_CONTENT_POLICY}",
                     prompt,
                     candidate,
-                    max_tokens,
+                    attempt_max_tokens,
                 )
                 if contains_sensitive_energy_content(response):
                     raise RuntimeError(
                         "Strategy Desk agent output violated the commercial-content policy."
                     )
                 return response
+            except MetaModelEmptyResponseError as exc:
+                last_error = exc
+                empty_response = True
+                if (
+                    exc.reason == "max_output_tokens"
+                    and attempt + 1 < MAX_MODEL_ATTEMPTS
+                    and attempt_max_tokens < MAX_RETRY_OUTPUT_TOKENS
+                ):
+                    attempt_max_tokens = min(
+                        attempt_max_tokens * 2,
+                        MAX_RETRY_OUTPUT_TOKENS,
+                    )
+                    print(
+                        f"[Strategy Desk Warning] Meta model {candidate} exhausted its "
+                        f"output-token budget; retrying with {attempt_max_tokens} tokens."
+                    )
+                    continue
             except MetaModelAPIError as exc:
                 last_error = exc
                 message = exc.detail.lower()
@@ -281,6 +345,12 @@ def _invoke(
         if model_not_found:
             print(
                 f"[Strategy Desk Warning] Meta model {candidate} is unavailable; "
+                "trying configured fallback."
+            )
+            continue
+        if empty_response and model_index + 1 < len(models):
+            print(
+                f"[Strategy Desk Warning] Meta model {candidate} returned no usable text; "
                 "trying configured fallback."
             )
             continue
@@ -526,8 +596,78 @@ def _gather_headlines() -> tuple[list[dict[str, Any]], str]:
     return [], "unavailable"
 
 
-def _gather_market_context() -> dict[str, Any]:
-    market_snapshot = get_brent_market_snapshot()
+def _gather_market_context(
+    supplied_market_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if supplied_market_snapshot and supplied_market_snapshot.get("price") is not None:
+        try:
+            supplied_price = float(supplied_market_snapshot["price"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError("The supplied Brent quote must be a positive finite number.") from exc
+        if not math.isfinite(supplied_price) or supplied_price <= 0:
+            raise ValueError("The supplied Brent quote must be a positive finite number.")
+        market_snapshot = {
+            "price": supplied_price,
+            "change_pct": supplied_market_snapshot.get("change_pct"),
+            "market_status": supplied_market_snapshot.get("market_status") or "reported",
+            "market_is_closed": bool(supplied_market_snapshot.get("market_is_closed", False)),
+            "price_basis": supplied_market_snapshot.get("price_basis") or "reported",
+            "price_as_of": supplied_market_snapshot.get("price_as_of"),
+            "price_source": "Dashboard Brent quote",
+        }
+    else:
+        market_error_detail = None
+        try:
+            market_snapshot = get_brent_market_snapshot()
+            market_snapshot["price_source"] = "Yahoo Finance"
+        except RuntimeError as exc:
+            market_error_detail = str(exc)
+            market_snapshot = None
+    if market_snapshot is None:
+        try:
+            saved_rows = _fetch_recent_rows(
+                "war_room_debates",
+                "created_at",
+                1,
+                "created_at,market_price,market_context",
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"{market_error_detail} Could not load a previously saved Brent price: {exc}"
+            ) from exc
+        saved = saved_rows[0] if saved_rows else {}
+        try:
+            saved_price = float(saved.get("market_price"))
+        except (TypeError, ValueError):
+            saved_price = float("nan")
+        if not math.isfinite(saved_price) or saved_price <= 0:
+            raise RuntimeError(
+                f"{market_error_detail} No valid previously saved Brent price is available."
+            )
+        saved_context = saved.get("market_context") or {}
+        if isinstance(saved_context, str):
+            try:
+                saved_context = json.loads(saved_context)
+            except json.JSONDecodeError:
+                saved_context = {}
+        if not isinstance(saved_context, dict):
+            saved_context = {}
+        market_snapshot = {
+            "price": saved_price,
+            "change_pct": None,
+            "market_status": "stale_cached_close",
+            "market_is_closed": False,
+            "price_basis": "cached_close",
+            "price_as_of": (
+                saved_context.get("price_as_of")
+                or saved.get("created_at")
+            ),
+            "price_source": "Previously saved Strategy Desk quote",
+            "price_warning": (
+                "Yahoo Finance did not provide a fresh Brent quote. This is the latest "
+                "previously saved price and may be stale."
+            ),
+        }
     telemetry, telemetry_source = _gather_telemetry()
     headlines, news_source = _gather_headlines()
     commodity_basket = get_commodity_technical_indicators()
@@ -542,6 +682,8 @@ def _gather_market_context() -> dict[str, Any]:
         "market_is_closed": market_snapshot["market_is_closed"],
         "price_basis": market_snapshot["price_basis"],
         "price_as_of": market_snapshot["price_as_of"],
+        "price_source": market_snapshot.get("price_source"),
+        **({"price_warning": market_snapshot["price_warning"]} if market_snapshot.get("price_warning") else {}),
         "commodity_basket": commodity_basket,
         "technical_report": technical_report[:1800],
         "telemetry": telemetry,
@@ -653,6 +795,13 @@ def _context_prompt(state: DebateState, agent_name: str | None = None) -> str:
             "do not imply that the price is moving while the market is closed, and frame any "
             "assessment as based on the last close plus available weekend news and data."
         )
+    elif context.get("price_basis") == "cached_close":
+        instruction = (
+            "Yahoo Finance did not provide a fresh Brent quote. The supplied Brent price is "
+            "the most recently saved historical price, not a current quote; its saved date is "
+            "price_as_of. Clearly disclose this limitation, do not describe the price as current, "
+            "and do not make a price-specific claim that depends on live data."
+        )
     elif context.get("price_basis") == "last_close":
         instruction = (
             "An intraday Brent quote is unavailable. The supplied price is the latest available "
@@ -737,23 +886,72 @@ def _parse_agent_turn(response: str) -> dict[str, Any]:
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", candidate, re.DOTALL | re.IGNORECASE)
     if fenced:
         candidate = fenced.group(1)
-    try:
-        result = json.loads(candidate)
-    except json.JSONDecodeError as exc:
-        raise ValueError("Strategy Desk agent response was not valid JSON.") from exc
-    if not isinstance(result, dict) or not str(result.get("analysis", "")).strip():
-        raise ValueError("Strategy Desk agent response must include non-empty analysis.")
-    direction = str(result.get("direction", "")).upper()
+    result = None
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", candidate):
+        try:
+            parsed, _ = decoder.raw_decode(candidate, match.start())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            result = parsed
+            break
+    if result is None:
+        analysis_match = re.search(
+            r'"analysis"\s*:\s*"((?:\\.|[^"\\])*)',
+            candidate,
+            re.DOTALL,
+        )
+        if analysis_match:
+            encoded_analysis = analysis_match.group(1).rstrip("\\")
+            try:
+                analysis = json.loads(f'"{encoded_analysis}"')
+            except json.JSONDecodeError:
+                analysis = (
+                    encoded_analysis
+                    .replace("\\n", "\n")
+                    .replace('\\"', '"')
+                    .replace("\\\\", "\\")
+                )
+            logging.warning("Strategy Desk agent returned truncated JSON; preserving its analysis text.")
+        else:
+            analysis = candidate
+            logging.warning("Strategy Desk agent did not return JSON; preserving its plain-text response.")
+    else:
+        analysis = str(result.get("analysis", "")).strip()
+
+    if not analysis.strip() and candidate:
+        analysis = candidate
+        logging.warning("Strategy Desk agent JSON omitted analysis; preserving its response text.")
+    if not analysis.strip():
+        raise ValueError("Strategy Desk agent returned an empty analysis.")
+    direction_match = re.search(
+        r'"direction"\s*:\s*"(UP|DOWN|NEUTRAL)"',
+        candidate,
+        re.IGNORECASE,
+    )
+    direction = str(
+        (result or {}).get("direction")
+        or (direction_match.group(1) if direction_match else "NEUTRAL")
+    ).upper()
     if direction not in {"UP", "DOWN", "NEUTRAL"}:
-        raise ValueError("Strategy Desk agent direction must be UP, DOWN, or NEUTRAL.")
-    confidence = int(result.get("confidence", -1))
+        direction = "NEUTRAL"
+    try:
+        confidence = int((result or {}).get("confidence", 0))
+    except (TypeError, ValueError):
+        confidence = 0
     if not 0 <= confidence <= 100:
-        raise ValueError("Strategy Desk agent confidence must be from 0 to 100.")
+        confidence = 0
     return {
-        "analysis": str(result["analysis"]).strip(),
+        "analysis": analysis.strip(),
         "direction": direction,
         "confidence": confidence,
     }
+
+
+def _invoke_agent_turn(system: str, prompt: str, model: str, max_tokens: int) -> dict[str, Any]:
+    response = _invoke(system, prompt, model, max_tokens=max_tokens)
+    return _parse_agent_turn(response)
 
 
 _AGENT_RESPONSE_FORMAT = (
@@ -813,9 +1011,7 @@ def _initial_analysis(role: str, state: DebateState) -> dict[str, Any]:
         "the spatial assessment is supplementary context, not a replacement.\n"
         f"{role_instructions}\n{_AGENT_RESPONSE_FORMAT}"
     )
-    turn = _parse_agent_turn(
-        _invoke(agent["system"], prompt, _model_for_role(role), max_tokens=2000)
-    )
+    turn = _invoke_agent_turn(agent["system"], prompt, _model_for_role(role), max_tokens=2000)
     state_keys = {
         "technical": ("initial_technical", "technical_direction"),
         "supply": ("initial_supply_thesis", "supply_direction"),
@@ -857,8 +1053,11 @@ def _thesis_rebuttal(role: str, loop: int, state: DebateState) -> dict[str, Any]
         "and explicitly say when the evidence cannot resolve the disagreement.\n"
         f"{_AGENT_RESPONSE_FORMAT}"
     )
-    turn = _parse_agent_turn(
-        _invoke(AGENTS[role]["system"], prompt, _model_for_role(role), max_tokens=1600)
+    turn = _invoke_agent_turn(
+        AGENTS[role]["system"],
+        prompt,
+        _model_for_role(role),
+        max_tokens=1600,
     )
     direction_key = "supply_direction" if role == "supply" else "demand_direction"
     return {output_key: turn["analysis"], direction_key: turn["direction"]}
@@ -1178,11 +1377,13 @@ def _format_strategy_desk_payload(analysis: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def run_agent_pipeline() -> dict[str, Any]:
+def run_agent_pipeline(
+    supplied_market_snapshot: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     if not supabase:
         raise RuntimeError("Supabase must be configured to save Strategy Desk analysis history.")
 
-    market_context = _gather_market_context()
+    market_context = _gather_market_context(supplied_market_snapshot)
     _score_due_predictions(market_context.get("commodity_basket", {}))
     agent_accuracy = _load_agent_accuracy()
     previous_debates = _summarize_previous_debate(_load_previous_debates())

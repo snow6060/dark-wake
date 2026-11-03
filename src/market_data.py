@@ -24,10 +24,24 @@ def _latest_price_data(
     market_is_closed: bool,
     max_points: int = 480,
 ) -> dict[str, Any] | None:
-    if history.empty or "Close" not in history:
+    if history.empty:
         return None
 
-    closes = pd.to_numeric(history["Close"], errors="coerce").dropna()
+    if isinstance(history.columns, pd.MultiIndex):
+        close_columns = [
+            column
+            for column in history.columns
+            if any(str(part).casefold() == "close" for part in column)
+        ]
+        if not close_columns:
+            return None
+        close_data = history[close_columns[0]]
+    elif "Close" in history:
+        close_data = history["Close"]
+    else:
+        return None
+
+    closes = pd.to_numeric(close_data, errors="coerce").dropna()
     closes = closes[closes > 0]
     if closes.empty:
         return None
@@ -98,26 +112,33 @@ def get_brent_market_snapshot(
             if snapshot is not None:
                 return snapshot
 
-    try:
-        daily_history = ticker.history(period="5d", interval="1d")
-    except Exception as error:
-        detail = f"Yahoo Finance daily history request failed: {error}"
-        if live_error:
-            detail = f"{live_error}; {detail}"
-        raise RuntimeError(f"Could not retrieve a Brent closing price: {detail}") from error
+    fallback_errors: list[str] = []
+    for fallback_period in ("5d", "1mo", "3mo"):
+        try:
+            daily_history = ticker.history(
+                period=fallback_period,
+                interval="1d",
+                auto_adjust=False,
+            )
+        except Exception as error:
+            fallback_errors.append(f"{fallback_period}: {error}")
+            continue
 
-    snapshot = _latest_price_data(
-        daily_history,
-        daily=True,
-        market_is_closed=market_is_closed,
-    )
-    if snapshot is None:
-        reason = "Yahoo Finance returned no valid Brent daily closing prices."
-        if live_error:
-            reason = f"{live_error}; {reason}"
-        raise RuntimeError(f"Could not retrieve a Brent closing price: {reason}")
+        snapshot = _latest_price_data(
+            daily_history,
+            daily=True,
+            market_is_closed=market_is_closed,
+        )
+        if snapshot is not None:
+            return snapshot
+        fallback_errors.append(f"{fallback_period}: no valid daily closes")
 
-    return snapshot
+    detail = "Yahoo Finance returned no valid Brent daily closing prices."
+    if live_error:
+        detail = f"{live_error}; {detail}"
+    if fallback_errors:
+        detail = f"{detail} Tried daily windows: {'; '.join(fallback_errors)}"
+    raise RuntimeError(f"Could not retrieve a Brent closing price: {detail}")
 
 
 def get_brent_price() -> float:

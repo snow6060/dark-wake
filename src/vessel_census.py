@@ -93,9 +93,16 @@ def propose_candidates(
     min_elongation: float = 1.7,
     contrast: float = 28.0,
     wide_min_chroma: float = 40.0,
+    scl_water_mask: np.ndarray | None = None,
 ) -> list[Candidate]:
     img = rgb.astype(np.float32)
     water = water_mask(rgb)
+    if scl_water_mask is not None:
+        if scl_water_mask.shape != water.shape:
+            raise ValueError(
+                f"Sentinel water mask shape {scl_water_mask.shape} does not match image shape {water.shape}."
+            )
+        water &= scl_water_mask.astype(bool)
     clouds = cloud_mask(rgb)
     bright = img.max(axis=2)
     chroma = bright - img.min(axis=2)

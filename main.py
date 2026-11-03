@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -36,6 +37,16 @@ from src.agents import (
 from src.market_data import get_brent_market_snapshot
 
 log = logging.getLogger(__name__)
+
+
+class StrategyDeskRunRequest(BaseModel):
+    price: float | None = Field(default=None, gt=0, allow_inf_nan=False)
+    change_pct: float | None = None
+    market_status: str | None = None
+    market_is_closed: bool | None = None
+    price_basis: str | None = None
+    price_as_of: str | None = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -232,9 +243,10 @@ def get_strategy_desk_debates():
 
 @app.post("/api/strategy-desk/run")
 @app.post("/api/war-room/run", include_in_schema=False)
-def run_strategy_desk_analysis():
+def run_strategy_desk_analysis(request: StrategyDeskRunRequest | None = None):
     try:
-        return run_debate_if_due()
+        quote = request.model_dump(exclude_none=True) if request else None
+        return run_debate_if_due(quote)
     except MetaModelQuotaError as e:
         raise HTTPException(status_code=429, detail=str(e))
     except RuntimeError as e:
