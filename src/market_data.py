@@ -1,149 +1,106 @@
-from datetime import datetime
+import math
+from datetime import datetime, timedelta, timezone
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import feedparser
-import pandas as pd
-import yfinance as yf
+import requests
 
 
-LONDON_TIMEZONE = ZoneInfo("Europe/London")
+YAHOO_CHART_URLS = (
+    "https://query1.finance.yahoo.com/v8/finance/chart/BZ=F",
+    "https://query2.finance.yahoo.com/v8/finance/chart/BZ=F",
+)
 
 
-def _is_weekend(now: datetime | None = None) -> bool:
-    current = now or datetime.now(LONDON_TIMEZONE)
-    if current.tzinfo is None:
-        current = current.replace(tzinfo=LONDON_TIMEZONE)
-    return current.astimezone(LONDON_TIMEZONE).weekday() >= 5
-
-
-def _latest_price_data(
-    history: pd.DataFrame,
-    *,
-    daily: bool,
-    market_is_closed: bool,
-    max_points: int = 480,
-) -> dict[str, Any] | None:
-    if history.empty:
-        return None
-
-    if isinstance(history.columns, pd.MultiIndex):
-        close_columns = [
-            column
-            for column in history.columns
-            if any(str(part).casefold() == "close" for part in column)
-        ]
-        if not close_columns:
-            return None
-        close_data = history[close_columns[0]]
-    elif "Close" in history:
-        close_data = history["Close"]
-    else:
-        return None
-
-    closes = pd.to_numeric(close_data, errors="coerce").dropna()
-    closes = closes[closes > 0]
-    if closes.empty:
-        return None
-
-    price = float(closes.iloc[-1])
-    reference_price = float(closes.iloc[-2]) if len(closes) > 1 else price
-    change_pct = (
-        (price - reference_price) / reference_price * 100
-        if reference_price
-        else 0.0
-    )
-    history_values = [
-        {
-            "time": index.strftime("%d %b" if daily else "%d %b %H:%M"),
-            "timestamp": index.isoformat() if hasattr(index, "isoformat") else str(index),
-            "price": round(float(value), 2),
-        }
-        for index, value in closes.tail(max_points).items()
-    ]
-    as_of = closes.index[-1]
-    if daily and hasattr(as_of, "date"):
-        as_of_text = as_of.date().isoformat()
-    else:
-        as_of_text = as_of.isoformat() if hasattr(as_of, "isoformat") else str(as_of)
-    return {
-        "symbol": "BrentCash (BZ=F)",
-        "price": round(price, 2),
-        "change_pct": round(change_pct, 2),
-        "history": history_values,
-        "market_status": "closed" if market_is_closed else ("last_close" if daily else "open"),
-        "market_is_closed": market_is_closed,
-        "price_basis": "last_close" if daily or market_is_closed else "intraday",
-        "history_interval": "daily" if daily else "intraday",
-        "price_as_of": as_of_text,
-    }
-
-
-def get_brent_market_snapshot(
-    now: datetime | None = None,
-    period: str = "1d",
-) -> dict[str, Any]:
-    """Return a Brent quote and price history for the requested chart period."""
-    history_options = {
-        "1d": ("1d", "5m", False),
-        "5d": ("5d", "15m", False),
-        "1mo": ("1mo", "1h", False),
-        "3mo": ("3mo", "1d", True),
-    }
-    if period not in history_options:
-        raise ValueError(f"Unsupported Brent chart period: {period}")
-
-    market_is_closed = _is_weekend(now)
-    ticker = yf.Ticker("BZ=F")
-    live_error: Exception | None = None
-    yahoo_period, interval, daily = history_options[period]
-
-    if not market_is_closed or period != "1d":
+def get_brent_live_quote() -> dict[str, Any]:
+    """Fetch the latest Brent quote directly from Yahoo Finance."""
+    errors: list[str] = []
+    for url in YAHOO_CHART_URLS:
         try:
-            intraday = ticker.history(period=yahoo_period, interval=interval)
-        except Exception as error:
-            live_error = error
-        else:
-            snapshot = _latest_price_data(
-                intraday,
-                daily=daily,
-                market_is_closed=market_is_closed,
+            response = requests.get(
+                url,
+                params={"range": "1d", "interval": "1m"},
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=8,
             )
-            if snapshot is not None:
-                return snapshot
-
-    fallback_errors: list[str] = []
-    for fallback_period in ("5d", "1mo", "3mo"):
-        try:
-            daily_history = ticker.history(
-                period=fallback_period,
-                interval="1d",
-                auto_adjust=False,
-            )
-        except Exception as error:
-            fallback_errors.append(f"{fallback_period}: {error}")
+            response.raise_for_status()
+            payload = response.json()
+        except (requests.RequestException, ValueError) as error:
+            errors.append(str(error))
             continue
 
-        snapshot = _latest_price_data(
-            daily_history,
-            daily=True,
-            market_is_closed=market_is_closed,
-        )
-        if snapshot is not None:
-            return snapshot
-        fallback_errors.append(f"{fallback_period}: no valid daily closes")
+        if not isinstance(payload, dict):
+            errors.append("Yahoo returned an invalid quote response.")
+            continue
+        chart = payload.get("chart") or {}
+        result = (chart.get("result") or [None])[0]
+        if not result:
+            errors.append(
+                str((chart.get("error") or {}).get("description") or "Yahoo returned no quote data")
+            )
+            continue
 
-    detail = "Yahoo Finance returned no valid Brent daily closing prices."
-    if live_error:
-        detail = f"{live_error}; {detail}"
-    if fallback_errors:
-        detail = f"{detail} Tried daily windows: {'; '.join(fallback_errors)}"
-    raise RuntimeError(f"Could not retrieve a Brent closing price: {detail}")
+        metadata = result.get("meta") or {}
+        price = metadata.get("regularMarketPrice")
+        quote_timestamp = metadata.get("regularMarketTime")
+        if price is None or quote_timestamp is None:
+            timestamps = result.get("timestamp") or []
+            quotes = (result.get("indicators") or {}).get("quote") or [{}]
+            closes = quotes[0].get("close") or []
+            latest = None
+            for timestamp, close in zip(reversed(timestamps), reversed(closes)):
+                try:
+                    if close is None or not math.isfinite(float(close)) or float(close) <= 0:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                latest = (timestamp, close)
+                break
+            if latest is not None:
+                quote_timestamp, price = latest
+
+        try:
+            price = float(price)
+            quote_time = datetime.fromtimestamp(float(quote_timestamp), tz=timezone.utc)
+        except (TypeError, ValueError, OSError, OverflowError):
+            errors.append("Yahoo returned no valid Brent price and timestamp.")
+            continue
+        if not math.isfinite(price) or price <= 0:
+            errors.append("Yahoo returned no valid Brent price.")
+            continue
+
+        previous_close = metadata.get("chartPreviousClose") or metadata.get("previousClose")
+        try:
+            previous_close = float(previous_close)
+        except (TypeError, ValueError):
+            previous_close = None
+        change_pct = (
+            round((price - previous_close) / previous_close * 100, 2)
+            if previous_close and math.isfinite(previous_close) and previous_close > 0
+            else None
+        )
+        quote_age = datetime.now(timezone.utc) - quote_time
+        is_live = timedelta(minutes=-5) <= quote_age <= timedelta(minutes=30)
+        return {
+            "symbol": "Brent Crude Oil Futures (BZ=F)",
+            "price": round(price, 2),
+            "change_pct": change_pct,
+            "market_status": "open" if is_live else "closed",
+            "market_is_closed": not is_live,
+            "price_basis": "intraday" if is_live else "last_close",
+            "price_as_of": quote_time.isoformat(),
+            "price_source": "Yahoo Finance",
+        }
+
+    raise RuntimeError(
+        "Could not retrieve a Brent quote directly from Yahoo Finance: "
+        + ("; ".join(errors) or "Yahoo returned no usable quote.")
+    )
 
 
 def get_brent_price() -> float:
-    """Compatibility helper returning the latest usable Brent price."""
-    return float(get_brent_market_snapshot()["price"])
+    """Compatibility helper returning Yahoo Finance's current Brent quote."""
+    return float(get_brent_live_quote()["price"])
 
 
 def get_oil_news():

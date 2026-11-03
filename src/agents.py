@@ -13,7 +13,7 @@ import requests
 
 from src.database import ChokepointRecord, SessionLocal
 from src.ingestion import contains_sensitive_energy_content, sanitize_energy_news
-from src.market_data import get_brent_market_snapshot
+from src.market_data import get_brent_live_quote
 from src.supabase_client import supabase
 from src.spatial_evidence import SPATIAL_GUARDRAIL, evidence_for_agent, get_spatial_telemetry
 from src.technicals import (
@@ -613,61 +613,10 @@ def _gather_market_context(
             "market_is_closed": bool(supplied_market_snapshot.get("market_is_closed", False)),
             "price_basis": supplied_market_snapshot.get("price_basis") or "reported",
             "price_as_of": supplied_market_snapshot.get("price_as_of"),
-            "price_source": "Dashboard Brent quote",
+            "price_source": "Yahoo Finance",
         }
     else:
-        market_error_detail = None
-        try:
-            market_snapshot = get_brent_market_snapshot()
-            market_snapshot["price_source"] = "Yahoo Finance"
-        except RuntimeError as exc:
-            market_error_detail = str(exc)
-            market_snapshot = None
-    if market_snapshot is None:
-        try:
-            saved_rows = _fetch_recent_rows(
-                "war_room_debates",
-                "created_at",
-                1,
-                "created_at,market_price,market_context",
-            )
-        except Exception as exc:
-            raise RuntimeError(
-                f"{market_error_detail} Could not load a previously saved Brent price: {exc}"
-            ) from exc
-        saved = saved_rows[0] if saved_rows else {}
-        try:
-            saved_price = float(saved.get("market_price"))
-        except (TypeError, ValueError):
-            saved_price = float("nan")
-        if not math.isfinite(saved_price) or saved_price <= 0:
-            raise RuntimeError(
-                f"{market_error_detail} No valid previously saved Brent price is available."
-            )
-        saved_context = saved.get("market_context") or {}
-        if isinstance(saved_context, str):
-            try:
-                saved_context = json.loads(saved_context)
-            except json.JSONDecodeError:
-                saved_context = {}
-        if not isinstance(saved_context, dict):
-            saved_context = {}
-        market_snapshot = {
-            "price": saved_price,
-            "change_pct": None,
-            "market_status": "stale_cached_close",
-            "market_is_closed": False,
-            "price_basis": "cached_close",
-            "price_as_of": (
-                saved_context.get("price_as_of")
-                or saved.get("created_at")
-            ),
-            "price_source": "Previously saved Strategy Desk quote",
-            "price_warning": (
-                "Yahoo Finance did not provide a fresh Brent quote. This is the latest "
-                "previously saved price and may be stale."
-            ),
-        }
+        market_snapshot = get_brent_live_quote()
     telemetry, telemetry_source = _gather_telemetry()
     headlines, news_source = _gather_headlines()
     commodity_basket = get_commodity_technical_indicators()
@@ -790,17 +739,9 @@ def _context_prompt(state: DebateState, agent_name: str | None = None) -> str:
     accuracy_summary = _sanitize_agent_context(state.get("agent_accuracy", []))
     if context.get("market_is_closed"):
         instruction = (
-            "The Brent market is closed for the weekend. The supplied price is the latest "
-            "available daily close, not a live weekend quote. Use its price_as_of timestamp, "
-            "do not imply that the price is moving while the market is closed, and frame any "
-            "assessment as based on the last close plus available weekend news and data."
-        )
-    elif context.get("price_basis") == "cached_close":
-        instruction = (
-            "Yahoo Finance did not provide a fresh Brent quote. The supplied Brent price is "
-            "the most recently saved historical price, not a current quote; its saved date is "
-            "price_as_of. Clearly disclose this limitation, do not describe the price as current, "
-            "and do not make a price-specific claim that depends on live data."
+            "The Brent market is not actively trading. The supplied Yahoo Finance price is "
+            "its latest available quote, not an actively updating price. Use its price_as_of "
+            "timestamp and do not imply that the price is moving right now."
         )
     elif context.get("price_basis") == "last_close":
         instruction = (

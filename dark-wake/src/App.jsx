@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import './App.css';
 import { getDailyTrafficDisplay } from './dailyTrafficDisplay.js';
 import SpatialIntelligence from "./SpatialIntelligence";
@@ -36,25 +36,11 @@ const formatCurrency = value => {
     : '—';
 };
 
-const getNicePriceInterval = value => {
-  const magnitude = 10 ** Math.floor(Math.log10(value));
-  const normalized = value / magnitude;
-  const step = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
-  return step * magnitude;
-};
-
 function DeskSignalPanel({ analysis, marketData, loading, error }) {
   const verdict = analysis?.verdict;
   const signal = String(verdict?.signal || 'HOLD').toLowerCase();
-  const analysisMarketData = analysis?.market_context;
-  const displayedMarketData = marketData?.price != null
-    ? marketData
-    : analysisMarketData?.price != null
-      ? analysisMarketData
-      : marketData;
-  const marketPriceLabel = displayedMarketData?.price_basis === 'cached_close'
-    ? 'SAVED CLOSE · STALE'
-    : displayedMarketData?.price_basis === 'intraday'
+  const displayedMarketData = marketData;
+  const marketPriceLabel = displayedMarketData?.price_basis === 'intraday'
     ? 'LIVE SNAPSHOT'
     : displayedMarketData?.price_basis === 'last_close'
       ? 'LAST CLOSE'
@@ -82,15 +68,10 @@ function DeskSignalPanel({ analysis, marketData, loading, error }) {
             <div><span>BRENT / BZ=F</span><strong>{formatCurrency(displayedMarketData?.price)}</strong></div>
             <span>{marketPriceLabel}</span>
           </div>
-          {displayedMarketData?.price_basis === 'cached_close' && (
-            <p className="market-closed-note">
-              Yahoo quote unavailable · saved price from {displayedMarketData.price_as_of || 'an earlier analysis'}; not live
-            </p>
-          )}
           {marketData?.market_is_closed && (
             <p className="market-closed-note">
-              Market closed · using the latest close
-              {marketData.price_as_of ? ` from ${marketData.price_as_of.slice(0, 10)}` : ''}
+              Market not actively trading · latest Yahoo Finance quote
+              {marketData.price_as_of ? ` from ${marketData.price_as_of.slice(0, 16)} UTC` : ''}
             </p>
           )}
           <div className="direction-grid">
@@ -199,6 +180,7 @@ const DEFAULT_SPATIAL_TELEMETRY = {
 export default function App() {
   const [activeTab, setActiveTab] = useState('news');
   const [brentData, setBrentData] = useState({ price: null, change_pct: null });
+  const [quoteError, setQuoteError] = useState('');
   const [articles, setArticles] = useState([]);
   const [showAllModal, setShowAllModal] = useState(false);
   const [strategyDeskAnalyses, setStrategyDeskAnalyses] = useState([]);
@@ -207,14 +189,6 @@ export default function App() {
   const [strategyDeskError, setStrategyDeskError] = useState('');
   const [debateRunning, setDebateRunning] = useState(false);
   const [debateRunError, setDebateRunError] = useState('');
-  const [chartTimeframe, setChartTimeframe] = useState('1d');
-  const [chartTimeZoom, setChartTimeZoom] = useState(1);
-  const [chartPanOffset, setChartPanOffset] = useState(0);
-  const [chartPriceScale, setChartPriceScale] = useState(1);
-  const [chartHover, setChartHover] = useState(null);
-  const [chartLoading, setChartLoading] = useState(false);
-  const [chartError, setChartError] = useState('');
-  const chartDragRef = useRef(null);
 
   // Chokepoint telemetry data state
   const [chokepointRecords, setChokepointRecords] = useState([]);
@@ -293,8 +267,6 @@ export default function App() {
 
   const safeSnapshotIdx = activeSnapshotIdx < displaySnapshots.length ? activeSnapshotIdx : 0;
   const activeSnapshot = displaySnapshots[safeSnapshotIdx] || displaySnapshots[0];
-  const [priceHistory, setPriceHistory] = useState([]);
-
   const defaultArticles = [
     { id: 1, title: 'OPEC+ Signals Potential Output Adjustments as Brent Prices Shift', source: 'Reuters Energy', time_ago: '12m ago', sentiment: 'Bullish' },
     { id: 2, title: 'Tanker Traffic Holds Steady Across Key Maritime Routes', source: 'Lloyd’s List', time_ago: '45m ago', sentiment: 'Neutral' },
@@ -302,58 +274,38 @@ export default function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const fetchMarketSnapshot = () => {
-      fetch(`${API_BASE_URL}/api/market/prices?period=${chartTimeframe}`)
-        .then(async response => {
-          const data = await response.json();
-          if (!response.ok) throw new Error(data.detail || 'Market price history is unavailable.');
+    const fetchLiveQuote = async () => {
+      try {
+        const response = await fetch(`${API_BASE_URL}/api/market/quote`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || 'Yahoo Finance quote unavailable.');
 
-          const price = Number(data?.price);
-          if (!Number.isFinite(price) || price <= 0) {
-            throw new Error('Market endpoint returned an invalid Brent price.');
-          }
-          const history = Array.isArray(data.history)
-            ? data.history
-              .filter(point => Number.isFinite(Number(point?.price)) && Number(point.price) > 0)
-              .map(point => ({ ...point, price: Number(point.price) }))
-            : [];
-          if (history.length === 0) throw new Error('No price history is available for this timeframe.');
-          return { ...data, price, history };
-        })
-        .then(data => {
-          if (cancelled) return;
-          const changePct = data.change_pct == null ? Number.NaN : Number(data.change_pct);
-          setBrentData({
-            ...data,
-            change_pct: Number.isFinite(changePct) ? changePct : null,
-          });
-          setPriceHistory(data.history);
-          setChartError('');
-          setChartLoading(false);
-        })
-        .catch(error => {
-          if (cancelled) return;
-          setChartError(error.message || 'Market endpoint offline.');
-          setChartLoading(false);
+        const price = Number(data?.price);
+        if (!Number.isFinite(price) || price <= 0) {
+          throw new Error('Yahoo Finance returned an invalid Brent quote.');
+        }
+        if (cancelled) return;
+        const changePct = data.change_pct == null ? Number.NaN : Number(data.change_pct);
+        setBrentData({
+          ...data,
+          price,
+          change_pct: Number.isFinite(changePct) ? changePct : null,
         });
+        setQuoteError('');
+      } catch (error) {
+        if (cancelled) return;
+        setBrentData({ price: null, change_pct: null });
+        setQuoteError(error.message || 'Yahoo Finance quote unavailable.');
+      }
     };
 
-    setChartLoading(true);
-    setChartError('');
-    fetchMarketSnapshot();
-    const interval = setInterval(fetchMarketSnapshot, 30000);
+    fetchLiveQuote();
+    const interval = setInterval(fetchLiveQuote, 30000);
     return () => {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [chartTimeframe]);
-
-  useEffect(() => {
-    setChartTimeZoom(1);
-    setChartPanOffset(0);
-    setChartPriceScale(1);
-    setChartHover(null);
-  }, [chartTimeframe]);
+  }, []);
 
   useEffect(() => {
     const fetchData = () => {
@@ -434,20 +386,9 @@ export default function App() {
     setDebateRunning(true);
     setDebateRunError('');
     try {
-      const quote = Number.isFinite(Number(brentData.price)) && Number(brentData.price) > 0
-        ? {
-            price: Number(brentData.price),
-            change_pct: brentData.change_pct,
-            market_status: brentData.market_status,
-            market_is_closed: brentData.market_is_closed,
-            price_basis: brentData.price_basis,
-            price_as_of: brentData.price_as_of,
-          }
-        : {};
       const response = await fetch(`${API_BASE_URL}/api/strategy-desk/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(quote),
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.detail || 'Could not run the Strategy Desk debate.');
@@ -512,106 +453,6 @@ export default function App() {
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(' ');
 
-  const visibleCount = priceHistory.length
-    ? Math.max(2, Math.ceil(priceHistory.length / chartTimeZoom))
-    : 0;
-  const maxPanOffset = Math.max(0, priceHistory.length - visibleCount);
-  const boundedPanOffset = Math.min(maxPanOffset, Math.max(0, chartPanOffset));
-  const visibleStart = Math.max(0, priceHistory.length - visibleCount - boundedPanOffset);
-  const visiblePriceHistory = priceHistory.slice(visibleStart, visibleStart + visibleCount);
-  const visiblePrices = visiblePriceHistory.map(point => point.price);
-  const rawMinPrice = visiblePrices.length ? Math.min(...visiblePrices) : 0;
-  const rawMaxPrice = visiblePrices.length ? Math.max(...visiblePrices) : 1;
-  const rawPriceRange = Math.max(rawMaxPrice - rawMinPrice, rawMaxPrice * 0.002, 0.02);
-  const priceInterval = getNicePriceInterval(rawPriceRange * chartPriceScale / 4);
-  let minPrice = Math.floor(rawMinPrice / priceInterval) * priceInterval;
-  let maxPrice = Math.ceil(rawMaxPrice / priceInterval) * priceInterval;
-  if (maxPrice <= minPrice) {
-    minPrice -= priceInterval;
-    maxPrice += priceInterval;
-  }
-  const priceRange = maxPrice - minPrice;
-  const priceY = price => 240 - ((price - minPrice) / priceRange) * 240;
-  const chartPoints = visiblePriceHistory.map((point, index) => {
-    const x = visiblePriceHistory.length > 1
-      ? index / (visiblePriceHistory.length - 1) * 600
-      : 300;
-    return { x, y: priceY(point.price), point };
-  });
-  const pointsString = chartPoints.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
-  const polygonPoints = chartPoints.length
-    ? `0,240 ${pointsString} 600,240`
-    : '';
-  const lastPoint = chartPoints.at(-1);
-  const chartAxisPrices = visiblePriceHistory.length
-    ? Array.from(
-      { length: Math.round(priceRange / priceInterval) + 1 },
-      (_, index) => maxPrice - index * priceInterval,
-    )
-    : [];
-  const chartTimeLabels = Array.from({ length: Math.min(6, visiblePriceHistory.length) }, (_, index) => {
-    const pointIndex = Math.round(
-      index * (visiblePriceHistory.length - 1) / Math.max(1, Math.min(6, visiblePriceHistory.length) - 1),
-    );
-    return visiblePriceHistory[pointIndex];
-  });
-  const chartTimeRangeLabel = visiblePriceHistory.length > 1
-    ? `${visiblePriceHistory[0].time} — ${visiblePriceHistory.at(-1).time}`
-    : 'No price history';
-
-  const handleChartPointerDown = event => {
-    event.currentTarget.setPointerCapture(event.pointerId);
-    chartDragRef.current = {
-      axis: event.currentTarget.dataset.axis || 'time',
-      x: event.clientX,
-      y: event.clientY,
-      panOffset: boundedPanOffset,
-      priceScale: chartPriceScale,
-    };
-  };
-  const handleChartPointerMove = event => {
-    const drag = chartDragRef.current;
-    if (drag?.axis === 'price') {
-      const deltaY = event.clientY - drag.y;
-      setChartPriceScale(Math.min(10000, Math.max(1, drag.priceScale * Math.exp(deltaY / 40))));
-      return;
-    }
-
-    const svg = event.currentTarget.closest('.chart-plot-area')?.querySelector('svg');
-    if (!svg || visiblePriceHistory.length === 0) return;
-    const rect = svg.getBoundingClientRect();
-    const x = Math.min(600, Math.max(0, (event.clientX - rect.left) / rect.width * 600));
-    const y = Math.min(240, Math.max(0, (event.clientY - rect.top) / rect.height * 240));
-    const index = Math.round(x / 600 * Math.max(0, visiblePriceHistory.length - 1));
-    setChartHover({ x, y, index });
-    if (drag?.axis === 'time' && maxPanOffset > 0) {
-      const deltaPoints = (event.clientX - drag.x) / rect.width * visiblePriceHistory.length;
-      setChartPanOffset(Math.min(maxPanOffset, Math.max(0, drag.panOffset + deltaPoints)));
-    }
-  };
-  const handleChartPointerUp = event => {
-    chartDragRef.current = null;
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  };
-  const handleChartWheel = event => {
-    event.preventDefault();
-    const factor = event.deltaY < 0 ? 1.2 : 1 / 1.2;
-    setChartTimeZoom(current => Math.min(
-      Math.max(1, priceHistory.length / 2),
-      Math.max(1, current * factor),
-    ));
-  };
-  const changeTimeframe = timeframe => {
-    setChartTimeframe(timeframe);
-    setPriceHistory([]);
-    setChartLoading(true);
-    setChartError('');
-    setChartPanOffset(0);
-    setChartTimeZoom(1);
-    setChartPriceScale(1);
-  };
 
   return (
     <div className="app-container">
@@ -656,10 +497,10 @@ export default function App() {
                 </p>
                 <span className="source-tag">
                   {brentData.price == null
-                    ? 'Yahoo Finance · Quote unavailable'
+                    ? quoteError || 'Yahoo Finance · Waiting for quote'
                     : brentData.price_basis === 'last_close'
-                      ? `Yahoo Finance · Last close ${brentData.price_as_of || ''}`
-                      : 'Source: Yahoo Finance'}
+                      ? `Yahoo Finance · Latest quote ${brentData.price_as_of || ''}`
+                      : `Yahoo Finance · Live quote ${brentData.price_as_of || ''}`}
                 </span>
               </div>
               <div className="card">
@@ -697,131 +538,41 @@ export default function App() {
                   <div>
                     <h3 className="panel-title">Brent Crude Oil Futures (BZ=F)</h3>
                     <span className="chart-subtext">
-                      {brentData.history_interval === 'daily'
-                        ? 'NY Mercantile // Daily Closing Prices'
-                        : 'NY Mercantile // Intraday Price History'} · {chartTimeRangeLabel}
+                      Current Yahoo Finance quote only
                     </span>
                   </div>
                   <span className="source-badge">Yahoo Finance</span>
                 </div>
 
-                <div className="chart-toolbar" aria-label="Price chart controls">
-                  <div className="chart-control-group" aria-label="Chart time interval">
-                    {[
-                      ['1d', '1D'],
-                      ['5d', '5D'],
-                      ['1mo', '1M'],
-                      ['3mo', '3M'],
-                    ].map(([period, label]) => (
-                      <button
-                        key={period}
-                        type="button"
-                        className={`chart-control-button ${chartTimeframe === period ? 'active' : ''}`}
-                        onClick={() => changeTimeframe(period)}
-                        aria-pressed={chartTimeframe === period}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="chart-control-group" aria-label="Time scale controls">
-                    <button type="button" className="chart-control-button" onClick={() => setChartTimeZoom(zoom => Math.min(Math.max(1, priceHistory.length / 2), zoom * 1.5))} aria-label="Zoom in on time">+</button>
-                    <button type="button" className="chart-control-button" onClick={() => setChartTimeZoom(zoom => Math.max(1, zoom / 1.5))} aria-label="Zoom out on time">−</button>
-                    <button type="button" className="chart-control-button chart-auto-button" onClick={() => { setChartTimeZoom(1); setChartPanOffset(0); }}>FIT</button>
-                  </div>
-                  <div className="chart-control-group chart-price-controls" aria-label="Price scale controls">
-                    <span>$/LEVEL</span>
-                    <button type="button" className="chart-control-button" onClick={() => setChartPriceScale(scale => Math.max(1, scale / 1.25))} aria-label="Decrease price interval">+</button>
-                    <button type="button" className="chart-control-button" onClick={() => setChartPriceScale(scale => Math.min(10000, scale * 1.25))} aria-label="Increase price interval">−</button>
-                    <button type="button" className="chart-control-button chart-auto-button" onClick={() => setChartPriceScale(1)}>AUTO</button>
-                  </div>
-                </div>
-
                 <div className="chart-canvas-area">
                   <div className="chart-plot-area">
                     <div className="chart-wrapper">
-                      <svg
-                        className="line-chart-svg"
-                        viewBox="0 0 600 240"
-                        preserveAspectRatio="none"
-                        onPointerDown={handleChartPointerDown}
-                        onPointerMove={handleChartPointerMove}
-                        onPointerUp={handleChartPointerUp}
-                        onPointerCancel={handleChartPointerUp}
-                        onPointerLeave={() => {
-                          if (!chartDragRef.current) setChartHover(null);
-                        }}
-                        onWheel={handleChartWheel}
-                        aria-label="Interactive Brent price chart. Drag to pan, scroll to zoom."
-                      >
-                        <defs>
-                          <linearGradient id="chartGradient" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="0%" stopColor="#f43f5e" stopOpacity="0.35" />
-                            <stop offset="100%" stopColor="#f43f5e" stopOpacity="0.0" />
-                          </linearGradient>
-                        </defs>
-                        {Array.from({ length: chartAxisPrices.length || 5 }, (_, index) => (
-                          <line
-                            key={index}
-                            x1="0"
-                            y1={chartAxisPrices.length ? priceY(chartAxisPrices[index]) : index * 60}
-                            x2="600"
-                            y2={chartAxisPrices.length ? priceY(chartAxisPrices[index]) : index * 60}
-                            className="chart-grid-line"
-                          />
+                      <svg className="line-chart-svg" viewBox="0 0 600 240" preserveAspectRatio="none" aria-hidden="true">
+                        {Array.from({ length: 5 }, (_, index) => (
+                          <line key={index} x1="0" y1={index * 60} x2="600" y2={index * 60} className="chart-grid-line" />
                         ))}
-                        {visiblePriceHistory.length > 0 && (
+                        {brentData.price > 0 && (
                           <>
-                            <polygon fill="url(#chartGradient)" points={polygonPoints} />
-                            <polyline fill="none" stroke="#f43f5e" strokeWidth="2" points={pointsString} />
-                            {lastPoint && <circle cx={lastPoint.x} cy={lastPoint.y} r="3.5" fill="#f43f5e" />}
-                          </>
-                        )}
-                        {chartHover && visiblePriceHistory[chartHover.index] && (
-                          <>
-                            <line x1={chartHover.x} y1="0" x2={chartHover.x} y2="240" className="chart-crosshair" />
-                            <line x1="0" y1={chartHover.y} x2="600" y2={chartHover.y} className="chart-crosshair" />
-                            <circle
-                              cx={chartPoints[chartHover.index]?.x}
-                              cy={chartPoints[chartHover.index]?.y}
-                              r="4"
-                              className="chart-hover-point"
-                            />
+                            <line x1="0" y1="120" x2="600" y2="120" className="chart-current-price-line" />
+                            <circle cx="570" cy="120" r="5" className="chart-current-price-dot" />
                           </>
                         )}
                       </svg>
-                      {chartHover && visiblePriceHistory[chartHover.index] && (
-                        <div
-                          className="chart-hover-tooltip"
-                          style={{ left: `${Math.min(78, Math.max(2, chartHover.x / 6))}%` }}
-                        >
-                          <strong>${visiblePriceHistory[chartHover.index].price.toFixed(2)}</strong>
-                          <span>{visiblePriceHistory[chartHover.index].time}</span>
-                        </div>
-                      )}
-                      {visiblePriceHistory.length === 0 && (
-                        <div className="chart-empty-state">
-                          {chartLoading ? 'Loading Brent price history…' : chartError || 'No Brent price history available.'}
-                        </div>
-                      )}
+                      <div className="chart-current-quote" aria-live="polite">
+                        {brentData.price > 0 ? (
+                          <>
+                            <span>CURRENT YAHOO FINANCE PRICE</span>
+                            <strong>{formatCurrency(brentData.price)}</strong>
+                            <small>{brentData.price_as_of || 'Quote timestamp unavailable'}</small>
+                          </>
+                        ) : (
+                          <span>{quoteError || 'Waiting for Yahoo Finance quote…'}</span>
+                        )}
+                      </div>
                     </div>
-                    <div
-                      className="chart-y-axis"
-                      data-axis="price"
-                      onPointerDown={handleChartPointerDown}
-                      onPointerMove={handleChartPointerMove}
-                      onPointerUp={handleChartPointerUp}
-                      onPointerCancel={handleChartPointerUp}
-                      aria-label={`Price interval ${formatCurrency(priceInterval)} per level. Drag vertically to change interval.`}
-                    >
-                      {chartAxisPrices.map((price, index) => <span key={index}>{formatCurrency(price)}</span>)}
-                    </div>
-                  </div>
-                  <div className="chart-x-axis">
-                    {chartTimeLabels.map((point, index) => <span key={`${point.timestamp || point.time}-${index}`}>{point.time}</span>)}
                   </div>
                   <div className="chart-interaction-hint">
-                    Drag chart to pan · scroll to zoom time · drag price scale to change $/level ({formatCurrency(priceInterval)}) · {chartLoading ? 'Updating…' : chartTimeframe.toUpperCase()}
+                    Yahoo Finance quote only · refreshed every 30 seconds · no price history
                   </div>
                 </div>
               </div>

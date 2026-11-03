@@ -15,10 +15,12 @@ it is not a hosted or real-time surveillance service.
 ### Overview
 
 The first tab is the operating overview: Brent market data, energy headlines,
-and maritime chokepoint context appear together. It is intended as a fast
-orientation layer—not a substitute for primary market, shipping, or government
-sources. Market quotes depend on Yahoo Finance being reachable and may be
-unavailable or delayed.
+and maritime chokepoint context appear together. The Brent panel displays the
+current quote returned by Yahoo Finance; it does not request historical price
+series. The quote refreshes periodically and can be unavailable or delayed if
+Yahoo Finance is unreachable or is not publishing a fresh update. The overview
+is an orientation layer—not a substitute for primary market, shipping, or
+government sources.
 
 ### Strategy Desk
 
@@ -32,10 +34,9 @@ commodity trading desk:
    BUY, SELL, or HOLD view, confidence, rationale, and risk factors.
 
 The synthesis is a model-generated research opinion, not investment advice or
-a trade instruction. It should disclose stale or missing inputs; when a live
-Brent quote is unavailable, the dashboard quote is passed to the debate if
-available, otherwise the app may use a clearly labelled previously saved
-price.
+a trade instruction. Each debate fetches its own current Brent quote directly
+from Yahoo Finance. If a quote cannot be retrieved, the debate does not run
+with a previously saved price.
 
 ### Spatial Intelligence
 

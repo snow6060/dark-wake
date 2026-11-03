@@ -5,8 +5,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from fastapi import FastAPI, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -34,18 +33,9 @@ from src.agents import (
     get_recent_debates,
     run_debate_if_due,
 )
-from src.market_data import get_brent_market_snapshot
+from src.market_data import get_brent_live_quote
 
 log = logging.getLogger(__name__)
-
-
-class StrategyDeskRunRequest(BaseModel):
-    price: float | None = Field(default=None, gt=0, allow_inf_nan=False)
-    change_pct: float | None = None
-    market_status: str | None = None
-    market_is_closed: bool | None = None
-    price_basis: str | None = None
-    price_as_of: str | None = None
 
 
 @asynccontextmanager
@@ -113,7 +103,7 @@ def read_root():
             "/api/chokepoints",
             "/api/ingest-trigger",
             "/api/run-analysis",
-            "/api/market/prices",
+            "/api/market/quote",
             "/api/news/feed",
             "/api/strategy-desk/debates",
             "/api/strategy-desk/run",
@@ -243,9 +233,9 @@ def get_strategy_desk_debates():
 
 @app.post("/api/strategy-desk/run")
 @app.post("/api/war-room/run", include_in_schema=False)
-def run_strategy_desk_analysis(request: StrategyDeskRunRequest | None = None):
+def run_strategy_desk_analysis():
     try:
-        quote = request.model_dump(exclude_none=True) if request else None
+        quote = get_brent_live_quote()
         return run_debate_if_due(quote)
     except MetaModelQuotaError as e:
         raise HTTPException(status_code=429, detail=str(e))
@@ -259,14 +249,13 @@ get_war_room_debates = get_strategy_desk_debates
 run_war_room_debate = run_strategy_desk_analysis
 
 
-@app.get("/api/market/prices")
-def get_market_prices(period: str = Query("1d", pattern="^(1d|5d|1mo|3mo)$")):
+@app.get("/api/market/quote")
+def get_market_quote():
     try:
-        return get_brent_market_snapshot(period=period)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+        return get_brent_live_quote()
     except RuntimeError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
 
 @app.get("/api/news/feed")
 def get_news_feed():
